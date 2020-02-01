@@ -2,7 +2,7 @@
 executable_path: '$WORKSPACE/build/stereoVIOEuroc'
 vocabulary_path: '$WORKSPACE/vocabulary/ORBvoc.yml'
 results_dir: '$WORKSPACE/spark_vio_evaluation/website/data'
-params_dir: '/root/spark_vio_evaluation/experiments/params'
+params_dir: '$WORKSPACE/VIO/params'
 dataset_dir: '/Datasets/euroc'
 
 datasets_to_run:
