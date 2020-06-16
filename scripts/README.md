@@ -1,5 +1,5 @@
 ## Scripts
-Here are various utility scripts for manipulating data within rosbags, especially useful for preparing Kimera datasets. Below is a list of each script and roughly what they do, then a list of the data formats each script uses. The `extract_xx` and `add_xx` scripts are the most generally useful. For JackRabbot, the rotate_images.py script is necessary to transform the vertical stereo to Kimera-compatible horizontal stereo.
+Here are various utility scripts for manipulating data within rosbags, especially useful for preparing Kimera datasets. Below is a list of each script and roughly what they do, then a list of the data formats each script uses. The `extract_xx` and `add_xx` scripts are the most generally useful. For JackRabbot, the `rotate_images.py` script is necessary to transform the vertical stereo to Kimera-compatible horizontal stereo.
 
 `add_imu_data.py`: Copies a rosbag, inserting all of the packets from an Imu-style csv at appropriate times in the bag.
 
@@ -9,7 +9,7 @@ Here are various utility scripts for manipulating data within rosbags, especiall
 
 `extract_imu_data.py`: Given an IMU topic, prints the relevant IMU information in the Imu csv style. To capture in a file, use file redirection as in python extract_imu_data.py > output_imu.csv
 
-`extract_tf.py`: Given a parent and child frame id, prints any direct transforms between them in the Tf csv style. Note that this will *not* yield indirect transforms-- if the tf tree has a->b->c, you must capture a->b and b->c, not a->c. Using rqt's tf tree visualization is useful to determine what transforms are available. To capture in a file, use file redirection as in `python extract_imu_data.py > output_imu.csv`
+`extract_tf.py`: Given a parent and child frame id, prints any direct transforms between them in the Tf csv style. Note that this will *not* yield indirect transforms-- if the tf tree has a->b->c, you must capture a->b and b->c, not a->c. Using rqt's tf tree visualization is useful to determine what transforms are available. To capture in a file, use file redirection as in `python extract_tf.py > output_imu.csv`
 
 `find_relative_pose.py`: Given left and right camera intrinsics and a rosbag of left/right stereo pairs, use opencv and/or opengv to determine the relative pose between the cameras using ORB feature points. This did not work as well as the others and likely has subtle bugs.
 
