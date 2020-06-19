@@ -9,9 +9,12 @@ from scipy.signal import savgol_filter
 
 def main():
     imu_old_df = pd.read_csv(r'../csv/tressidor_imu.csv')
-    imu_new_df = compute_new_imu_df_from_gt()
+    #imu_new_df = compute_new_imu_df_from_gt()
     #imu_new_df = blend_imu_and_dsp_gyro()
-    #imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gt_smoothed.csv')
+    #imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gyro.csv')
+    imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gt_smoothed.csv')
+    #imu_old_df = pd.read_csv(r'../csv/euroc_imu_data.csv')
+    #imu_new_df = pd.read_csv(r'../csv/euroc_imu_data.csv')
     plot_accelerations(imu_old_df, imu_new_df)
     plot_angular_velocities(imu_old_df, imu_new_df)
     plot_orientations(imu_old_df, imu_new_df)    
