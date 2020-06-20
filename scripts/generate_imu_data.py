@@ -9,10 +9,10 @@ from scipy.signal import savgol_filter
 
 def main():
     imu_old_df = pd.read_csv(r'../csv/tressidor_imu.csv')
-    #imu_new_df = compute_new_imu_df_from_gt()
+    imu_new_df = compute_new_imu_df_from_gt()
     #imu_new_df = blend_imu_and_dsp_gyro()
     #imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gyro.csv')
-    imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gt_smoothed.csv')
+    #imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gt_smoothed.csv')
     #imu_old_df = pd.read_csv(r'../csv/euroc_imu_data.csv')
     #imu_new_df = pd.read_csv(r'../csv/euroc_imu_data.csv')
     plot_accelerations(imu_old_df, imu_new_df)
@@ -20,11 +20,11 @@ def main():
     plot_orientations(imu_old_df, imu_new_df)    
 
 def compute_new_imu_df_from_gt():
-    trajectory = pd.read_csv(r'../csv/traj_gt.csv')
+    trajectory = pd.read_csv(r'../csv/traj_gt_padded.csv')
     #smoothed_trajectory = smooth_trajectory(trajectory)
     imu_new_df = imu_from_traj_finite_differences(trajectory)
     smoothed_imu_new_df = smooth_imu(imu_new_df)
-    smoothed_imu_new_df.to_csv(r'../csv/tressidor_imu_from_gt_smoothed.csv', index=False)
+    smoothed_imu_new_df.to_csv(r'../csv/tressidor_imu_from_gt_smoothed_and_padded.csv', index=False)
     plot_angular_velocities(imu_new_df, smoothed_imu_new_df)
     return smoothed_imu_new_df
 
@@ -73,6 +73,7 @@ def smooth_trajectory(trajectory):
 
 def imu_from_traj_finite_differences(trajectory_df):
     imu_columns = ['timestamp','ax','ay','az','rvx','rvy','rvz','qw','qx','qy','qz']
+    print "Trajectory df of shape {}:\n{}".format(trajectory_df.shape, trajectory_df)
     imu_df = pd.DataFrame(columns=imu_columns,index=range(len(trajectory_df.index)-2))
     relevant_indices = range(1,len(trajectory_df.index)-1)
     quat_columns = ['qx','qy','qz','qw']
@@ -95,14 +96,13 @@ def imu_from_traj_finite_differences(trajectory_df):
 	rot_next = Rotation.from_quat(trajectory_df[quat_columns].loc[i+1])
 	z_delta = rot_next.as_euler('XYZ')[2]-rot_prev.as_euler('XYZ')[2]
 	rot_delta = rot_next*rot_prev.inv()
-        if(z_delta > 1 or z_delta < -1): # 57 degrees
-	    print "Raw angle change is z= {}, computed as {}".format(z_delta, rot_delta.as_euler('XYZ'))
 	regularized_delta = regularize_small_rotation(rot_delta.as_euler('XYZ'))
 	angular_vel = regularized_delta/2/h
 	# fill df
 	imu_df.loc[i-1,'rvx'] = angular_vel[0]
 	imu_df.loc[i-1,'rvy'] = angular_vel[1]
 	imu_df.loc[i-1,'rvz'] = angular_vel[2]
+    print "IMU df of shape {}:\n{}".format(imu_df.shape, imu_df)
     return imu_df
 
 def regularize_small_rotation(euler_rot_vector):
