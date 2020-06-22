@@ -79,6 +79,10 @@ def imu_from_traj_finite_differences(trajectory_df):
     quat_columns = ['qx','qy','qz','qw']
     imu_df[quat_columns] = trajectory_df[quat_columns].iloc[relevant_indices]
     imu_df['timestamp'] = trajectory_df['#timestamp'].iloc[relevant_indices]
+    print "IMU df before dropping row of shape {}:\n{}".format(imu_df.shape, imu_df)
+    imu_df = imu_df.drop([0])
+    imu_df.reset_index()
+    print "IMU df before adding values of shape {}:\n{}".format(imu_df.shape, imu_df)
     for i in (relevant_indices):
 	h = (trajectory_df.loc[i+1,'#timestamp'] - trajectory_df.loc[i-1,'#timestamp'])/2 * 1e-9 # convert to secs
 	# compute acceleration: (f(x-1) - 2f(x) + f(x+1))/h^2
