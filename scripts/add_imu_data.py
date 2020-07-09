@@ -34,12 +34,12 @@ def imu_msgs_from_csv(path_to_csv, frame_id):
 
 
 imu_frame = 'ext_imu_frame'
-imu_topic = 'imu/data_from_gt'
+imu_topic = 'imu/data_from_gt_noisy_central'
 prev_t = rospy.Time(0)
 imu_arr_index = 0
-with rosbag.Bag(r'/home/andrew/Documents/SPARK/JackRabbot/rosbags/TressiderWithGTIMUMassaged.bag', 'w') as outbag:
-    imu_arr = imu_msgs_from_csv('../csv/tressidor_imu_from_gt_smoothed_padded_cleaned.csv', imu_frame)
-    for topic, msg, t in rosbag.Bag(r'/home/andrew/Documents/SPARK/JackRabbot/rosbags/TressiderRotatedOccam01.bag').read_messages():
+with rosbag.Bag(r'/home/andrew/Documents/SPARK/JackRabbot/rosbags/TressiderWithGTIMUNoisyAndGTVel4.bag', 'w') as outbag:
+    imu_arr = imu_msgs_from_csv('../csv/tressidor_imu_from_gt_noisy_refactored.csv', imu_frame)
+    for topic, msg, t in rosbag.Bag(r'/home/andrew/Documents/SPARK/JackRabbot/rosbags/TressiderWithGTIMUNoisyAndGTVel3.bag').read_messages():
 	while(imu_arr_index < len(imu_arr) and prev_t <= imu_arr[imu_arr_index].header.stamp and imu_arr[imu_arr_index].header.stamp <= t):
 	    outbag.write(imu_topic, imu_arr[imu_arr_index], imu_arr[imu_arr_index].header.stamp)
             # print "Interjected IMU message with t: {}".format(imu_arr[imu_arr_index].header.stamp)

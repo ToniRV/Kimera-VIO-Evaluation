@@ -14,19 +14,20 @@ def main():
     #imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gyro.csv')
     #imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gt_smoothed.csv')
     #imu_old_df = pd.read_csv(r'../csv/euroc_imu_data.csv')
-    #imu_new_df = pd.read_csv(r'../csv/euroc_imu_data.csv')
+    #imu_new_df = pd.read_csv(r'../csv/tressidor_imu_from_gt_noisy.csv')
     plot_accelerations(imu_old_df, imu_new_df)
     plot_angular_velocities(imu_old_df, imu_new_df)
     plot_orientations(imu_old_df, imu_new_df)    
 
 def compute_new_imu_df_from_gt():
-    trajectory = pd.read_csv(r'../csv/traj_gt_padded.csv')
+    trajectory = pd.read_csv(r'../csv/traj_gt.csv')
     #smoothed_trajectory = smooth_trajectory(trajectory)
+    #imu_new_df = imu_from_traj_forward_finite_differences(trajectory)
     imu_new_df = imu_from_traj_finite_differences(trajectory)
-    smoothed_imu_new_df = smooth_imu(imu_new_df)
-    smoothed_imu_new_df.to_csv(r'../csv/tressidor_imu_from_gt_smoothed_and_padded.csv', index=False)
-    plot_angular_velocities(imu_new_df, smoothed_imu_new_df)
-    return smoothed_imu_new_df
+    #smoothed_imu_new_df = smooth_imu(imu_new_df)
+    imu_new_df.to_csv(r'../csv/tressidor_imu_from_gt_noisy_refactored.csv', index=False)
+    #plot_angular_velocities(imu_new_df, smoothed_imu_new_df)
+    return imu_new_df
 
 def blend_imu_and_dsp_gyro():
     imu_old_df = pd.read_csv(r'../csv/tressidor_imu.csv')
@@ -73,20 +74,15 @@ def smooth_trajectory(trajectory):
 
 def imu_from_traj_finite_differences(trajectory_df):
     imu_columns = ['timestamp','ax','ay','az','rvx','rvy','rvz','qw','qx','qy','qz']
-    print "Trajectory df of shape {}:\n{}".format(trajectory_df.shape, trajectory_df)
     imu_df = pd.DataFrame(columns=imu_columns,index=range(len(trajectory_df.index)-2))
     relevant_indices = range(1,len(trajectory_df.index)-1)
     quat_columns = ['qx','qy','qz','qw']
-    imu_df[quat_columns] = trajectory_df[quat_columns].iloc[relevant_indices]
-    imu_df['timestamp'] = trajectory_df['#timestamp'].iloc[relevant_indices]
-    print "IMU df before dropping row of shape {}:\n{}".format(imu_df.shape, imu_df)
-    imu_df = imu_df.drop([0])
-    imu_df.reset_index()
-    print "IMU df before adding values of shape {}:\n{}".format(imu_df.shape, imu_df)
     for i in (relevant_indices):
+	imu_df.loc[i-1, quat_columns] = trajectory_df.loc[i, quat_columns]
+	imu_df.loc[i-1, 'timestamp'] = trajectory_df.loc[i, '#timestamp']
 	h = (trajectory_df.loc[i+1,'#timestamp'] - trajectory_df.loc[i-1,'#timestamp'])/2 * 1e-9 # convert to secs
 	# compute acceleration: (f(x-1) - 2f(x) + f(x+1))/h^2
-	axi = (trajectory_df.loc[i-1,'x'] - 2*trajectory_df.loc[i,'x'] + trajectory_df['x'].loc[i+1])/h**2
+	axi = (trajectory_df.loc[i-1,'x'] - 2*trajectory_df.loc[i,'x'] + trajectory_df.loc[i+1,'x'])/h**2
 	ayi = (trajectory_df.loc[i-1,'y'] - 2*trajectory_df.loc[i,'y'] + trajectory_df.loc[i+1,'y'])/h**2
 	# add gravity
 	azi = (trajectory_df.loc[i-1,'z'] - 2*trajectory_df.loc[i,'z'] + trajectory_df.loc[i+1,'z'])/h**2
@@ -98,14 +94,42 @@ def imu_from_traj_finite_differences(trajectory_df):
 	# compute angular velocity: (f(x+1) - f(x-1))/2h
 	rot_prev = Rotation.from_quat(trajectory_df[quat_columns].loc[i-1])
 	rot_next = Rotation.from_quat(trajectory_df[quat_columns].loc[i+1])
-	z_delta = rot_next.as_euler('XYZ')[2]-rot_prev.as_euler('XYZ')[2]
-	rot_delta = rot_next*rot_prev.inv()
-	regularized_delta = regularize_small_rotation(rot_delta.as_euler('XYZ'))
-	angular_vel = regularized_delta/2/h
+	rot_delta = rot_prev.inv()*rot_next
+	angular_vel = rot_delta.as_rotvec()/2/h
 	# fill df
 	imu_df.loc[i-1,'rvx'] = angular_vel[0]
 	imu_df.loc[i-1,'rvy'] = angular_vel[1]
 	imu_df.loc[i-1,'rvz'] = angular_vel[2]
+    return imu_df
+
+def imu_from_traj_forward_finite_differences(trajectory_df):
+    imu_columns = ['timestamp','ax','ay','az','rvx','rvy','rvz','qw','qx','qy','qz']
+    imu_df = pd.DataFrame(columns=imu_columns,index=range(len(trajectory_df.index)-2))
+    relevant_indices = range(2,len(trajectory_df.index))
+    quat_columns = ['qx','qy','qz','qw']
+    for i in (relevant_indices):
+	imu_df.loc[i-2, quat_columns] = trajectory_df.loc[i, quat_columns]
+	imu_df.loc[i-2, 'timestamp'] = trajectory_df.loc[i, '#timestamp']
+	h = (trajectory_df.loc[i,'#timestamp'] - trajectory_df.loc[i-2,'#timestamp'])/2 * 1e-9 # convert to secs
+	# compute acceleration: (f(x-1) - 2f(x) + f(x+1))/h^2
+	axi = (trajectory_df.loc[i-2,'x'] - 2*trajectory_df.loc[i-1,'x'] + trajectory_df.loc[i,'x'])/h**2
+	ayi = (trajectory_df.loc[i-2,'y'] - 2*trajectory_df.loc[i-1,'y'] + trajectory_df.loc[i,'y'])/h**2
+	# add gravity
+	azi = (trajectory_df.loc[i-2,'z'] - 2*trajectory_df.loc[i-1,'z'] + trajectory_df.loc[i,'z'])/h**2
+	azi = azi + 9.81
+	global_accel_vec = [axi, ayi, azi]
+	local_to_global_orientation = Rotation.from_quat(trajectory_df[quat_columns].loc[i])
+	local_accel_vec = local_to_global_orientation.inv().apply(global_accel_vec)
+	imu_df.loc[i-2,['ax','ay','az']] = local_accel_vec
+	# compute angular velocity: (f(x+1) - f(x-1))/2h
+	rot_prev = Rotation.from_quat(trajectory_df[quat_columns].loc[i-1])
+	rot_next = Rotation.from_quat(trajectory_df[quat_columns].loc[i])
+	rot_delta = rot_prev.inv()*rot_next
+	angular_vel = rot_delta.as_rotvec()/h
+	# fill df
+	imu_df.loc[i-2,'rvx'] = angular_vel[0]
+	imu_df.loc[i-2,'rvy'] = angular_vel[1]
+	imu_df.loc[i-2,'rvz'] = angular_vel[2]
     print "IMU df of shape {}:\n{}".format(imu_df.shape, imu_df)
     return imu_df
 
