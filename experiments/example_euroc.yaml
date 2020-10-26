@@ -1,22 +1,34 @@
-executable_path: '$HOME/Code/spark_vio/build/stereoVIOEuroc'
-results_dir: '$HOME/Code/spark_vio_evaluation/results'
-params_dir: '$HOME/Code/spark_vio_evaluation/experiments/params'
-dataset_dir: '$HOME/datasets/euroc'
+executable_path: '$HOME/catkin_ws/build/kimera_vio/stereoVIOEuroc'
+vocabulary_path: '$HOME/catkin_ws/src/Kimera-VIO/vocabulary/ORBvoc.yml'
+results_dir: '$HOME/code/spark_vio_evaluation/results'
+params_dir: '$HOME/catkin_ws/src/Kimera-VIO/params'
+dataset_dir: '$HOME/datasets/EuRoC'
 
 datasets_to_run:
  - name: V1_01_easy
+   use_lcd: true
+   plot_vio_and_pgo: true
    segments: [1]
-   pipelines: ['S']
+   pipelines: ['Euroc']
+   discard_n_start_poses: 0
+   discard_n_end_poses: 0
+   initial_frame: 10
+   final_frame: 3500
+ - name: MH_01_easy
+   use_lcd: true
+   plot_vio_and_pgo: true
+   segments: [5]
+   pipelines: ['Euroc']
    discard_n_start_poses: 10
    discard_n_end_poses: 10
    initial_frame: 100
-   final_frame: 300
- - name: MH_01_easy
-   segments: [1]
-   pipelines: ['S']
-   discard_n_start_poses: 0
+   final_frame: 3500
+ - name: V2_01_easy
+   use_lcd: true
+   plot_vio_and_pgo: true
+   segments: [5]
+   pipelines: ['Euroc']
+   discard_n_start_poses: 10
    discard_n_end_poses: 10
    initial_frame: 100
-   final_frame: 300
-
-
+   final_frame: 3500

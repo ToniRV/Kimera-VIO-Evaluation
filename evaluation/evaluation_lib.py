@@ -3,63 +3,27 @@
 from __future__ import print_function
 import copy
 import os
-import yaml
+from ruamel import yaml
 import math
 import subprocess
 import numpy as np
 import glog as log
-from evo.tools import plot
 import matplotlib.pyplot as plt
 from shutil import copyfile, move, rmtree, copytree, copy2
 
+import pandas as pd
+
 from evo.core import trajectory, sync, metrics
+from evo.tools import plot, pandas_bridge
+from evo.tools import file_interface
+
 import evaluation.tools as evt
 
-FIX_MAX_Y = True
-Y_MAX_APE_TRANS = {
-    "MH_01_easy": 0.3,
-    "MH_02_easy": 0.25,
-    "MH_03_medium": 0.35,
-    "MH_04_difficult": 0.5,
-    "MH_05_difficult": 0.36,
-    "V1_01_easy": 0.125,
-    "V1_02_medium": 0.16,
-    "V1_03_difficult": 0.4,
-    "V2_01_easy": 0.175,
-    "V2_02_medium": 0.24,
-    "V2_03_difficult": 0.7
-}
-Y_MAX_RPE_TRANS = {
-    "MH_01_easy": 0.028,
-    "MH_02_easy": 0.025,
-    "MH_03_medium": 0.091,
-    "MH_04_difficult": 0.21,
-    "MH_05_difficult": 0.07,
-    "V1_01_easy": 0.03,
-    "V1_02_medium": 0.04,
-    "V1_03_difficult": 0.15,
-    "V2_01_easy": 0.04,
-    "V2_02_medium": 0.06,
-    "V2_03_difficult": 0.17
-}
-Y_MAX_RPE_ROT = {
-    "MH_01_easy": 0.4,
-    "MH_02_easy": 0.6,
-    "MH_03_medium": 0.35,
-    "MH_04_difficult": 1.0,
-    "MH_05_difficult": 0.3,
-    "V1_01_easy": 0.6,
-    "V1_02_medium": 1.5,
-    "V1_03_difficult": 1.25,
-    "V2_01_easy": 0.6,
-    "V2_02_medium": 1.0,
-    "V2_03_difficult": 2.6
-}
 
 def aggregate_all_results(results_dir):
     """ Aggregate APE results and draw APE boxplot as well as write latex table
     with results:
-        Args: 
+        Args:
             - result_dir: path to the directory with results ordered as follows:
                \* dataset_name:
                |___\* pipeline_type:
@@ -84,7 +48,7 @@ def aggregate_all_results(results_dir):
     # Aggregate all stats for each pipeline and dataset
     stats = dict()
     for root, dirnames, filenames in os.walk(results_dir):
-        for results_filename in fnmatch.filter(filenames, 'results.yaml'):
+        for results_filename in fnmatch.filter(filenames, 'results_vio.yaml'):
             results_filepath = os.path.join(root, results_filename)
             # Get pipeline name
             pipeline_name = os.path.basename(root)
@@ -93,15 +57,26 @@ def aggregate_all_results(results_dir):
             # Collect stats
             if stats.get(dataset_name) is None:
                 stats[dataset_name] = dict()
-            stats[dataset_name][pipeline_name] = yaml.load(open(results_filepath, 'r'))
+
+            try:
+                stats[dataset_name][pipeline_name] = yaml.load(open(results_filepath, 'r'), Loader=yaml.Loader)
+            except yaml.YAMLError as e:
+                raise Exception("Error in results_vio file: ", e)
+            except:
+                log.fatal("\033[1mFailed opening file: \033[0m\n %s" % results_filepath)
+
             log.debug("Check stats from: " + results_filepath)
-            check_stats(stats[dataset_name][pipeline_name])
+            try:
+                evt.check_stats(stats[dataset_name][pipeline_name])
+            except Exception as e:
+                log.warning(e)
+
     return stats
 
 def aggregate_ape_results(results_dir):
     """ Aggregate APE results and draw APE boxplot as well as write latex table
     with results:
-        Args: 
+        Args:
             - result_dir: path to the directory with results ordered as follows:
                \* dataset_name:
                |___\* pipeline_type:
@@ -112,432 +87,864 @@ def aggregate_ape_results(results_dir):
                |___\* pipeline_type:
                |   |___results.yaml
                Basically all subfolders with a results.yaml will be examined.
+
+        Returns:
+            - stats: a nested dictionary with the statistics and results of all pipelines:
+                * First level ordered with dataset_name as keys:
+                * Second level ordered with pipeline_type as keys:
+                * Each stats[dataset_name][pipeline_type] value has:
+                    * absolute_errors: an evo Result type with trajectory and APE stats.
+                    * relative_errors: RPE stats.
     """
     stats = aggregate_all_results(results_dir)
     # Draw APE boxplot
-    log.info("Drawing APE boxplots.")
-    evt.draw_ape_boxplots(stats, results_dir)
-    # Write APE table
-    log.info("Writting APE latex table.")
-    evt.write_latex_table(stats, results_dir)
+    if (len(list(stats.values())) > 0):
+        log.info("Drawing APE boxplots.")
+        evt.draw_ape_boxplots(stats, results_dir)
+        # Write APE table
+        log.info("Writing APE latex table.")
+        evt.write_latex_table(stats, results_dir)
+    return stats
 
-def check_stats(stats):
-    if not "relative_errors" in stats:
-        log.error("Stats: ")
-        log.error(stats)
-        raise Exception("\033[91mWrong stats format: no relative_errors... \n"
-                        "Are you sure you runned the pipeline and "
-                        "saved the results? (--save_results).\033[99m")
-    else:
-        if len(stats["relative_errors"]) == 0:
-            raise Exception("\033[91mNo relative errors available... \n"
-                            "Are you sure you runned the pipeline and "
-                            "saved the results? (--save_results).\033[99m")
 
-        if not "rpe_rot" in list(stats["relative_errors"].values())[0]:
-            log.error("Stats: ")
-            log.error(stats)
-            raise Exception("\033[91mWrong stats format: no rpe_rot... \n"
-                            "Are you sure you runned the pipeline and "
-                            "saved the results? (--save_results).\033[99m")
-        if not "rpe_trans" in list(stats["relative_errors"].values())[0]:
-            log.error("Stats: ")
-            log.error(stats)
-            raise Exception("\033[91mWrong stats format: no rpe_trans... \n"
-                            "Are you sure you runned the pipeline and "
-                            "saved the results? (--save_results).\033[99m")
-    if not "absolute_errors" in stats:
-        log.error("Stats: ")
-        log.error(stats)
-        raise Exception("\033[91mWrong stats format: no absolute_errors... \n"
-                        "Are you sure you runned the pipeline and "
-                        "saved the results? (--save_results).\033[99m")
+from tqdm import tqdm
+""" DatasetRunner is used to run the pipeline on datasets """
+class DatasetRunner:
+    def __init__(self, experiment_params, args, extra_flagfile_path = ''):
+        self.vocabulary_path = os.path.expandvars(experiment_params['vocabulary_path'])
+        self.results_dir     = os.path.expandvars(experiment_params['results_dir'])
+        self.params_dir      = os.path.expandvars(experiment_params['params_dir'])
+        self.dataset_dir     = os.path.expandvars(experiment_params['dataset_dir'])
+        self.executable_path = os.path.expandvars(experiment_params['executable_path'])
+        self.datasets_to_run = experiment_params['datasets_to_run']
+        self.verbose_vio     = args.verbose_sparkvio
 
-def run_analysis(traj_ref_path, traj_est_path, segments, save_results, display_plot, save_plots,
-                 save_folder, confirm_overwrite = False, dataset_name = "", discard_n_start_poses=0,
-                discard_n_end_poses=0):
-    """ Run analysis on given trajectories, saves plots on given path:
-    :param traj_ref_path: path to the reference (ground truth) trajectory.
-    :param traj_est_path: path to the estimated trajectory.
-    :param save_results: saves APE, and RPE per segment results.
-    :param save_plots: whether to save the plots.
-    :param save_folder: where to save the plots.
-    :param confirm_overwrite: whether to confirm overwriting plots or not.
-    :param dataset_name: optional param, to allow setting the same scale on different plots.
-    """
-    # Load trajectories.
-    from evo.tools import file_interface
-    traj_ref = None
-    try:
-        traj_ref = file_interface.read_euroc_csv_trajectory(traj_ref_path) # TODO make it non-euroc specific.
-    except file_interface.FileInterfaceException as e:
-        raise Exception("\033[91mMissing ground truth csv! \033[93m {}.".format(e))
+        self.extra_flagfile_path = extra_flagfile_path
 
-    traj_est = None
-    try:
-        traj_est = file_interface.read_swe_csv_trajectory(traj_est_path)
-    except file_interface.FileInterfaceException as e:
-        log.info(e)
-        raise Exception("\033[91mMissing vio output csv.\033[99m")
+        self.pipeline_output_dir = os.path.join(self.results_dir, "tmp_output/output/")
+        evt.create_full_path_if_not_exists(self.pipeline_output_dir)
 
-    evt.print_purple("Registering trajectories")
-    traj_ref, traj_est = sync.associate_trajectories(traj_ref, traj_est)
+    def run_all(self):
+        """ Runs all datasets in experiments file. """
+        # Run experiments.
+        log.info("Run experiments")
+        successful_run = True
+        for dataset in tqdm(self.datasets_to_run):
+            log.info("Run dataset: %s" % dataset['name'])
+            if not self.run_dataset(dataset):
+                log.info("\033[91m Dataset: %s failed!! \033[00m" %
+                         dataset['name'])
+                successful_run = False
+        return successful_run
 
-    evt.print_purple("Aligning trajectories")
-    traj_est = trajectory.align_trajectory(traj_est, traj_ref, correct_scale = False,
-                                           discard_n_start_poses = int(discard_n_start_poses),
-                                           discard_n_end_poses = int(discard_n_end_poses))
+    def run_dataset(self, dataset):
+        """ Run a single dataset from an experiments file and save all output. This is done
+            for every pipeline requested for the dataset.
 
-    num_of_poses = traj_est.num_poses
-    traj_est.reduce_to_ids(range(int(discard_n_start_poses), int(num_of_poses - discard_n_end_poses), 1))
-    traj_ref.reduce_to_ids(range(int(discard_n_start_poses), int(num_of_poses - discard_n_end_poses), 1))
+            Args:
+                dataset: a dataset to run as defined in the experiments yaml file.
 
-    results = dict()
+            Returns: True if all pipelines for the dataset succeed, False otherwise.
+        """
+        dataset_name = dataset['name']
 
-    evt.print_purple("Calculating APE translation part")
-    data = (traj_ref, traj_est)
-    ape_metric = metrics.APE(metrics.PoseRelation.translation_part)
-    ape_metric.process_data(data)
-    ape_result = ape_metric.get_result()
-    results["absolute_errors"] = ape_result
-
-    log.info(ape_result.pretty_str(info=True))
-
-    # TODO(Toni): Save RPE computation results rather than the statistics
-    # you can compute statistics later...
-    evt.print_purple("Calculating RPE translation part for plotting")
-    rpe_metric_trans = metrics.RPE(metrics.PoseRelation.translation_part,
-                                   1.0, metrics.Unit.frames, 0.0, False)
-    rpe_metric_trans.process_data(data)
-    rpe_stats_trans = rpe_metric_trans.get_all_statistics()
-    log.info("mean: %f" % rpe_stats_trans["mean"])
-
-    evt.print_purple("Calculating RPE rotation angle for plotting")
-    rpe_metric_rot = metrics.RPE(metrics.PoseRelation.rotation_angle_deg,
-                                 1.0, metrics.Unit.frames, 1.0, False)
-    rpe_metric_rot.process_data(data)
-    rpe_stats_rot = rpe_metric_rot.get_all_statistics()
-    log.info("mean: %f" % rpe_stats_rot["mean"])
-
-    results["relative_errors"] = dict()
-    # Read segments file
-    for segment in segments:
-        results["relative_errors"][segment] = dict()
-        evt.print_purple("RPE analysis of segment: %d"%segment)
-        evt.print_lightpurple("Calculating RPE segment translation part")
-        rpe_segment_metric_trans = metrics.RPE(metrics.PoseRelation.translation_part,
-                                       float(segment), metrics.Unit.meters, 0.01, True)
-        rpe_segment_metric_trans.process_data(data)
-        rpe_segment_stats_trans = rpe_segment_metric_trans.get_all_statistics()
-        results["relative_errors"][segment]["rpe_trans"] = rpe_segment_stats_trans
-        # print(rpe_segment_stats_trans)
-        # print("mean:", rpe_segment_stats_trans["mean"])
-
-        evt.print_lightpurple("Calculating RPE segment rotation angle")
-        rpe_segment_metric_rot = metrics.RPE(metrics.PoseRelation.rotation_angle_deg,
-                                     float(segment), metrics.Unit.meters, 0.01, True)
-        rpe_segment_metric_rot.process_data(data)
-        rpe_segment_stats_rot = rpe_segment_metric_rot.get_all_statistics()
-        results["relative_errors"][segment]["rpe_rot"] = rpe_segment_stats_rot
-        # print(rpe_segment_stats_rot)
-        # print("mean:", rpe_segment_stats_rot["mean"])
-
-    if save_results:
-        # Save results file
-        results_file = os.path.join(save_folder, 'results.yaml')
-        evt.print_green("Saving analysis results to: %s" % results_file)
-        with open(results_file,'w') as outfile:
-            if confirm_overwrite:
-                if evt.user.check_and_confirm_overwrite(results_file):
-                        outfile.write(yaml.dump(results, default_flow_style=False))
-                else:
-                    log.info("Not overwritting results.")
+        has_a_pipeline_failed = False
+        pipelines_to_run_list = dataset['pipelines']
+        if len(pipelines_to_run_list) == 0:
+            log.warning("Not running pipeline...")
+        for pipeline_type in pipelines_to_run_list:
+            # TODO shouldn't this break when a pipeline has failed? Not necessarily
+            # if we want to plot all pipelines except the failing ones.
+            evt.print_green("Run pipeline: %s" % pipeline_type)
+            pipeline_success = self.__run_vio(dataset, pipeline_type)
+            if pipeline_success:
+                evt.print_green("Successful pipeline run.")
             else:
-                outfile.write(yaml.dump(results, default_flow_style=False))
+                log.error("Failed pipeline run!")
+                has_a_pipeline_failed = True
 
-    # For each segment in segments file
-    # Calculate rpe with delta = segment in meters with all-pairs set to True
-    # Calculate max, min, rmse, mean, median etc
+        if not has_a_pipeline_failed:
+            evt.print_green("All pipeline runs were successful.")
+        evt.print_green("Finished evaluation for dataset: " + dataset_name)
+        return not has_a_pipeline_failed
 
-    # Plot boxplot, or those cumulative figures you see in evo (like demographic plots)
-    if display_plot or save_plots:
-        evt.print_green("Plotting:")
-        log.info(dataset_name)
-        plot_collection = plot.PlotCollection("Example")
-        # metric values
-        fig_1 = plt.figure(figsize=(8, 8))
-        ymax = -1
-        if dataset_name is not "" and FIX_MAX_Y:
-            ymax = Y_MAX_APE_TRANS[dataset_name]
+    def __run_vio(self, dataset, pipeline_type):
+        """ Performs subprocess call for a specific pipeline on a specific dataset.
 
-        ape_statistics = ape_metric.get_all_statistics()
-        plot.error_array(fig_1, ape_metric.error, statistics=ape_statistics,
-                         name="APE translation", title=""#str(ape_metric)
-                         , xlabel="Keyframe index [-]",
-                         ylabel="APE translation [m]", y_min= 0.0, y_max=ymax)
-        plot_collection.add_figure("APE_translation", fig_1)
+            Args:
+                dataset: a dataset to run as defined in the experiments yaml file.
+                pipeline_type: a pipeline representing a set of parameters to use, as
+                    defined in the experiments yaml file for the dataset in question.
 
-        # trajectory colormapped with error
-        fig_2 = plt.figure(figsize=(8, 8))
-        plot_mode = plot.PlotMode.xy
-        ax = plot.prepare_axis(fig_2, plot_mode)
-        plot.traj(ax, plot_mode, traj_ref, '--', 'gray', 'reference')
-        plot.traj_colormap(ax, traj_est, ape_metric.error, plot_mode,
-                           min_map=0.0, max_map=math.ceil(ape_statistics['max']*10)/10,
-                           title="ATE mapped onto trajectory [m]")
-        plot_collection.add_figure("APE_translation_trajectory_error", fig_2)
+            Returns: True if the thread exits successfully, False otherwise.
+        """
+        def kimera_vio_thread(thread_return, minloglevel=0):
+            """ Function to run Kimera-VIO in another thread """
+            # Subprocess returns 0 if Ok, any number bigger than 1 if not ok.
+            command = "{} \
+                    --logtostderr=1 --colorlogtostderr=1 --log_prefix=1 \
+                    --minloglevel={} \
+                    --dataset_path={}/{} --output_path={} \
+                    --params_folder_path={}/{} \
+                    --vocabulary_path={} \
+                    --flagfile={}/{}/{} --flagfile={}/{}/{} \
+                    --flagfile={}/{}/{} --flagfile={}/{}/{} \
+                    --flagfile={}/{}/{} --flagfile={}/{} \
+                    --visualize=false \
+                    --visualize_lmk_type=false \
+                    --visualize_mesh=false \
+                    --visualize_mesh_with_colored_polygon_clusters=false \
+                    --visualize_point_cloud=false \
+                    --visualize_convex_hull=false \
+                    --visualize_plane_constraints=false \
+                    --visualize_planes=false \
+                    --visualize_plane_label=false \
+                    --visualize_semantic_mesh=false \
+                    --visualize_mesh_in_frustum=false \
+                    --viz_type=2 \
+                    --initial_k={} --final_k={} --use_lcd={} \
+                    --log_euroc_gt_data=true --log_output=true".format(
+                        self.executable_path,
+                        minloglevel,
+                        self.dataset_dir, dataset["name"], self.pipeline_output_dir,
+                        self.params_dir, pipeline_type,
+                        self.vocabulary_path,
+                        self.params_dir, pipeline_type, "flags/stereoVIOEuroc.flags",
+                        self.params_dir, pipeline_type, "flags/Mesher.flags",
+                        self.params_dir, pipeline_type, "flags/VioBackEnd.flags",
+                        self.params_dir, pipeline_type, "flags/RegularVioBackEnd.flags",
+                        self.params_dir, pipeline_type, "flags/Visualizer3D.flags",
+                        self.params_dir, self.extra_flagfile_path,
+                        dataset["initial_frame"], dataset["final_frame"], dataset["use_lcd"])
+            # print("Starting Kimera-VIO with command:\n")
+            # print(command)
+            return_code = subprocess.call(command, shell=True)
+            if return_code is 0:
+                thread_return['success'] = True
+            else:
+                thread_return['success'] = False
 
-        # RPE
-        ## Trans
-        ### metric values
-        fig_3 = plt.figure(figsize=(8, 8))
-        if dataset_name is not "" and FIX_MAX_Y:
-            ymax = Y_MAX_RPE_TRANS[dataset_name]
-        plot.error_array(fig_3, rpe_metric_trans.error, statistics=rpe_stats_trans,
-                         name="RPE translation", title=""#str(rpe_metric_trans)
-                         , xlabel="Keyframe index [-]", ylabel="RPE translation [m]", y_max=ymax)
-        plot_collection.add_figure("RPE_translation", fig_3)
 
-        ### trajectory colormapped with error
-        fig_4 = plt.figure(figsize=(8, 8))
-        plot_mode = plot.PlotMode.xy
-        ax = plot.prepare_axis(fig_4, plot_mode)
-        traj_ref_trans = copy.deepcopy(traj_ref)
-        traj_ref_trans.reduce_to_ids(rpe_metric_trans.delta_ids)
-        traj_est_trans = copy.deepcopy(traj_est)
-        traj_est_trans.reduce_to_ids(rpe_metric_trans.delta_ids)
-        plot.traj(ax, plot_mode, traj_ref_trans, '--', 'gray', 'Reference')
-        plot.traj_colormap(ax, traj_est_trans, rpe_metric_trans.error, plot_mode,
-                           min_map=0.0, max_map=math.ceil(rpe_stats_trans['max']*10)/10,
-                           title="RPE translation error mapped onto trajectory [m]"
-                          )
-        plot_collection.add_figure("RPE_translation_trajectory_error", fig_4)
+        import threading
+        import time
+        import itertools, sys # just for spinner
+        spinner = itertools.cycle(['-', '/', '|', '\\'])
+        thread_return={'success': False}
+        minloglevel = 2 # Set Kimera-VIO verbosity level to ERROR
+        if self.verbose_vio:
+            minloglevel = 0 # Set Kimera-VIO verbosity level to INFO
+        thread = threading.Thread(target=kimera_vio_thread, args=(thread_return, minloglevel,))
+        thread.start()
+        while thread.is_alive():
+            if not self.verbose_vio:
+                # If Kimera-VIO is not in verbose mode, the user might think the python script is hanging.
+                # So, instead, display a spinner of 80 characters.
+                sys.stdout.write(next(spinner) * 10)  # write the next character
+                sys.stdout.flush()                     # flush stdout buffer (actual character display)
+                sys.stdout.write('\b' * 10)            # erase the last written char
+            time.sleep(0.100) # Sleep 100ms while Kimera-VIO is running
+        thread.join()
 
-        ## Rot
-        ### metric values
-        fig_5 = plt.figure(figsize=(8, 8))
-        if dataset_name is not "" and FIX_MAX_Y:
-            ymax = Y_MAX_RPE_ROT[dataset_name]
-        plot.error_array(fig_5, rpe_metric_rot.error, statistics=rpe_stats_rot,
-                         name="RPE rotation error", title=""#str(rpe_metric_rot)
-                         , xlabel="Keyframe index [-]", ylabel="RPE rotation [deg]", y_max=ymax)
-        plot_collection.add_figure("RPE_rotation", fig_5)
+        # Move output files for future evaluation:
+        self.move_output_files(pipeline_type, dataset)
 
-        ### trajectory colormapped with error
-        fig_6 = plt.figure(figsize=(8, 8))
-        plot_mode = plot.PlotMode.xy
-        ax = plot.prepare_axis(fig_6, plot_mode)
-        traj_ref_rot = copy.deepcopy(traj_ref)
-        traj_ref_rot.reduce_to_ids(rpe_metric_rot.delta_ids)
-        traj_est_rot = copy.deepcopy(traj_est)
-        traj_est_rot.reduce_to_ids(rpe_metric_rot.delta_ids)
-        plot.traj(ax, plot_mode, traj_ref_rot, '--', 'gray', 'Reference')
-        plot.traj_colormap(ax, traj_est_rot, rpe_metric_rot.error, plot_mode,
-                           min_map=0.0, max_map=math.ceil(rpe_stats_rot['max']*10)/10,
-                           title="RPE rotation error mapped onto trajectory [deg]")
-        plot_collection.add_figure("RPE_rotation_trajectory_error", fig_6)
+        return thread_return['success']
 
-        if display_plot:
+    def move_output_files(self, pipeline_type, dataset):
+        """ Moves all output files for a particular pipeline and dataset
+            from their temporary logging location during runtime to the evaluation location.
+
+            Args:
+                pipeline_type: a pipeline representing a set of parameters to use, as
+                    defined in the experiments yaml file for the dataset in question.
+                dataset: a dataset to run as defined in the experiments yaml file.
+        """
+        dataset_name = dataset["name"]
+        dataset_results_dir = os.path.join(self.results_dir, dataset_name)
+        dataset_pipeline_result_dir = os.path.join(dataset_results_dir, pipeline_type)
+
+        log.debug("\033[1mMoving output dir:\033[0m \n %s \n \033[1m to destination:\033[0m \n %s" %
+            (self.pipeline_output_dir, dataset_pipeline_result_dir))
+
+        try:
+            evt.move_output_from_to(self.pipeline_output_dir, dataset_pipeline_result_dir)
+        except:
+            log.fatal("\033[1mFailed copying output dir: \033[0m\n %s \n \033[1m to destination: %s \033[0m\n" %
+                (self.pipeline_output_dir, dataset_pipeline_result_dir))
+
+
+""" DatasetEvaluator is used to evaluate performance of the pipeline on datasets """
+class DatasetEvaluator:
+    def __init__(self, experiment_params, args, extra_flagfile_path):
+        self.results_dir      = os.path.expandvars(experiment_params['results_dir'])
+        self.datasets_to_eval = experiment_params['datasets_to_run']
+
+        self.display_plots = args.plot
+        self.save_results  = args.save_results
+        self.save_plots    = args.save_plots
+        self.write_website = args.write_website
+        self.save_boxplots = args.save_boxplots
+        self.run_vio       = args.run_pipeline
+        self.analyze_vio   = args.analyze_vio
+
+        self.runner = DatasetRunner(experiment_params, args, extra_flagfile_path)
+
+        # Class to write the results to the Jenkins website
+        self.website_builder = evt.WebsiteBuilder(self.results_dir)
+
+    def evaluate(self):
+        """ Run datasets if necessary, evaluate all. """
+        for dataset in tqdm(self.datasets_to_eval):
+            # Run the dataset if needed:
+            if self.run_vio:
+                log.info("Run dataset: %s" % dataset['name'])
+                if not self.runner.run_dataset(dataset):
+                    log.info("\033[91m Dataset: %s failed!! \033[00m" %
+                            dataset['name'])
+                    raise Exception("Failed to run dataset %s." % dataset['name'])
+
+            # Evaluate each dataset if needed:
+            if self.analyze_vio:
+                self.evaluate_dataset(dataset)
+
+        if self.write_website:
+            log.info("Writing full website.")
+            stats = aggregate_ape_results(self.results_dir)
+            if (len(list(stats.values())) > 0):
+                self.website_builder.write_boxplot_website(stats)
+            self.website_builder.write_datasets_website()
+
+        return True
+
+    def evaluate_dataset(self, dataset):
+        """ Evaluates VIO performance on given dataset """
+        log.info("Evaluate dataset: %s" % dataset['name'])
+        pipelines_to_evaluate_list = dataset['pipelines']
+        for pipeline_type in pipelines_to_evaluate_list:
+            if not self.__evaluate_run(pipeline_type, dataset):
+                log.error("Failed to evaluate dataset %s for pipeline %s."
+                        % dataset['name'] % pipeline_type)
+                raise Exception("Failed evaluation.")
+
+        if self.save_boxplots:
+            self.save_boxplots_to_file(pipelines_to_evaluate_list, dataset)
+
+    def __evaluate_run(self, pipeline_type, dataset):
+        """ Evaluate performance of one pipeline of one dataset, as defined in the experiments
+            yaml file.
+
+            Assumes that the files traj_gt.csv traj_vio.csv and traj_pgo.csv are present.
+
+            Args:
+                dataset: a dataset to evaluate as defined in the experiments yaml file.
+                pipeline_type: a pipeline representing a set of parameters to use, as
+                    defined in the experiments yaml file for the dataset in question.
+
+            Returns: True if the there are no exceptions during evaluation, False otherwise.
+        """
+        dataset_name = dataset["name"]
+        dataset_results_dir = os.path.join(self.results_dir, dataset_name)
+        dataset_pipeline_result_dir = os.path.join(dataset_results_dir, pipeline_type)
+
+        traj_gt_path = os.path.join(dataset_pipeline_result_dir, "traj_gt.csv")
+        traj_vio_path = os.path.join(dataset_pipeline_result_dir, "traj_vio.csv")
+        traj_pgo_path = os.path.join(dataset_pipeline_result_dir, "traj_pgo.csv")
+
+        # Analyze dataset:
+        log.debug("\033[1mAnalysing dataset:\033[0m \n %s \n \033[1m for pipeline \033[0m %s."
+                % (dataset_results_dir, pipeline_type))
+        evt.print_green("Starting analysis of pipeline: %s" % pipeline_type)
+
+        discard_n_start_poses = dataset["discard_n_start_poses"]
+        discard_n_end_poses = dataset["discard_n_end_poses"]
+        segments = dataset["segments"]
+
+        [plot_collection, results_vio, results_pgo] = self.run_analysis(
+            traj_gt_path, traj_vio_path, traj_pgo_path, segments,
+            dataset_name, discard_n_start_poses, discard_n_end_poses)
+
+        if self.save_results:
+            if results_vio is not None:
+                self.save_results_to_file(results_vio, "results_vio", dataset_pipeline_result_dir)
+            if results_pgo is not None:
+                self.save_results_to_file(results_pgo, "results_pgo", dataset_pipeline_result_dir)
+
+        if self.display_plots and plot_collection is not None:
             evt.print_green("Displaying plots.")
             plot_collection.show()
 
-        if save_plots:
-            evt.print_green("Saving plots to: ")
-            log.info(save_folder)
-            # Config output format (pdf, eps, ...) using evo_config...
-            plot_collection.export(os.path.join(save_folder, "plots.eps"), False)
-            plot_collection.export(os.path.join(save_folder, "plots.pdf"), False)
+        if self.save_plots and plot_collection is not None:
+            self.save_plots_to_file(plot_collection, dataset_pipeline_result_dir)
 
-# Run pipeline as a subprocess.
-def run_vio(executable_path, dataset_dir, dataset_name, params_dir,
-            pipeline_output_dir, pipeline_type, initial_k, final_k,
-            extra_flagfile_path="", verbose_sparkvio=False):
-    """ Runs pipeline depending on the pipeline_type using a subprocess.
-    Args:
-        - executable_path: where the SparkVIO executable is.
-        - dataset_dir: where the Euroc dataset is.
-        - dataset_name: Euroc dataset to be run.
-        - params_dir: directory where the SparkVIO parameters are stored. Needs to follow
-            a convention: flagfiles must have the names below, same for yaml files.
-        - pipeline_output_dir: directory where to store output information from SparkVIO.
-        - pipeline_type: must be one of ['S', 'SP', 'SPR']
-        - initial_k: k_th frame where to start running SparkVIO
-        - final_k: k_th frame where to stop SparkVIO
-        - extra_flagfile_path: to be used in order to override other flags or add new ones.
-            Useful for regression tests when the param to be regressed is a gflag.
-        - verbose_sparkvio: whether to print the SparkVIO messages or not.
-            This is useful for debugging, but too verbose when you want to see APE/RPE results.
-    """
+        if self.write_website:
+            log.info("Writing performance website for dataset: %s" % dataset_name)
+            self.website_builder.add_dataset_to_website(dataset_name, pipeline_type, dataset_pipeline_result_dir)
+            self.website_builder.write_datasets_website()
 
-    def spark_vio_thread(thread_return, minloglevel=0):
-        """ Function to run SparkVIO in another thread """
-        thread_return['success'] = subprocess.call("{} \
-                            --logtostderr=1 --colorlogtostderr=1 --log_prefix=1 \
-                            --dataset_path={}/{} --output_path={} \
-                            --vio_params_path={}/{}/{} \
-                            --tracker_params_path={}/{}/{} \
-                            --flagfile={}/{}/{} --flagfile={}/{}/{} \
-                            --flagfile={}/{}/{} --flagfile={}/{}/{} \
-                            --flagfile={}/{}/{} --flagfile={}/{} \
-                            --initial_k={} --final_k={} \
-                            --log_output=True --minloglevel={}".format(
-            executable_path, dataset_dir, dataset_name, pipeline_output_dir,
-            params_dir, pipeline_type, "regularVioParameters.yaml",
-            params_dir, pipeline_type, "trackerParameters.yaml",
-            params_dir, pipeline_type, "flags/stereoVIOEuroc.flags",
-            params_dir, pipeline_type, "flags/Mesher.flags",
-            params_dir, pipeline_type, "flags/VioBackEnd.flags",
-            params_dir, pipeline_type, "flags/RegularVioBackEnd.flags",
-            params_dir, pipeline_type, "flags/Visualizer3D.flags",
-            params_dir, extra_flagfile_path,
-            initial_k, final_k, minloglevel),
-            shell=True)
+        return True
 
-    import threading
-    import time
-    import itertools, sys # just for spinner
-    spinner = itertools.cycle(['-', '/', '|', '\\'])
-    thread_return={'success': False}
-    minloglevel = 2 # Set SparkVIO verbosity level to ERROR
-    if verbose_sparkvio:
-        minloglevel = 0 # Set SparkVIO verbosity level to INFO
-    thread = threading.Thread(target=spark_vio_thread, args=(thread_return, minloglevel,))
-    thread.start()
-    while thread.is_alive():
-        if not verbose_sparkvio:
-            # If SparkVIO is not in verbose mode, the user might think the python script is hanging.
-            # So, instead, display a spinner of 80 characters.
-            sys.stdout.write(next(spinner) * 80)  # write the next character
-            sys.stdout.flush()                     # flush stdout buffer (actual character display)
-            sys.stdout.write('\b' * 80)            # erase the last written char
-        time.sleep(0.100) # Sleep 100ms while SparkVIO is running
-    thread.join()
-    return thread_return['success']
+    def run_analysis(self, traj_ref_path, traj_vio_path, traj_pgo_path, segments,
+                     dataset_name="", discard_n_start_poses=0, discard_n_end_poses=0):
+        """ Analyze data from a set of trajectory csv files.
 
-def process_vio(executable_path, dataset_dir, dataset_name, results_dir, params_dir, pipeline_output_dir,
-                pipeline_type, SEGMENTS, save_results, plot, save_plots, output_file, run_pipeline,
-                analyse_vio, discard_n_start_poses, discard_n_end_poses, initial_k, final_k, extra_flagfile_path='',
-                verbose_sparkvio=False):
-    """ 
-    Args:
-        - executable_path: path to the pipeline executable (i.e. `./build/spark_vio`).
-        - dataset_dir: directory of the dataset, must contain traj_gt.csv (the ground truth trajectory for analysis to work).
-        - dataset_name: specific dataset to run.
-        - results_dir: directory where the results of the run will reside:
-        -   used as results_dir/dataset_name/S, results_dir/dataset_name/SP, results_dir/dataset_name/SPR
-        -   where each directory have traj_est.csv (the estimated trajectory), and plots if requested.
-        - params_dir: directory where the parameters for each pipeline reside:
-        -   used as params_dir/S, params_dir/SP, params_dir/SPR.
-        - pipeline_output_dir: where to store all output_* files produced by the pipeline.
-        - pipeline_type: type of pipeline to process (1: S, 2: SP, 3: SPR).
-        - SEGMENTS: segments for RPE boxplots.
-        - save_results: saves APE, and RPE per segment results of the run.
-        - plot: whether to plot the APE/RPE results or not.
-        - save_plots: saves plots of APE/RPE.
-        - output_file: the name of the trajectory estimate output of the vio which will then be copied as traj_est.csv.
-        - run_pipeline: whether to run the VIO to generate a new traj_est.csv.
-        - analyse_vio: whether to analyse traj_est.csv or not.
-        - extra_flagfile_path: to be used in order to override other flags or add new ones.
-            Useful for regression tests when the param to be regressed is a gflag.
-        - verbose_sparkvio: whether to print the SparkVIO messages or not.
-            This is useful for debugging, but too verbose when you want to see APE/RPE results.
-    """
-    dataset_results_dir = os.path.join(results_dir, dataset_name)
-    dataset_pipeline_result_dir = os.path.join(dataset_results_dir, pipeline_type)
-    traj_ref_path = os.path.join(dataset_dir, dataset_name, "mav0/state_groundtruth_estimate0/data.csv") # TODO make it not specific to EUROC
-    traj_es = os.path.join(dataset_results_dir, pipeline_type, "traj_es.csv")
-    evt.create_full_path_if_not_exists(traj_es)
-    if run_pipeline:
-        evt.print_green("Run pipeline: %s" % pipeline_type)
-        # The override flags are used by the regression tests.
-        if run_vio(executable_path, dataset_dir, dataset_name, params_dir,
-                   pipeline_output_dir, pipeline_type, initial_k, final_k,
-                   extra_flagfile_path, verbose_sparkvio) == 0:
-            evt.print_green("Successful pipeline run.")
-            log.debug("\033[1mCopying output file: \033[0m \n %s \n \033[1m to results file:\033[0m\n %s" % 
-                (output_file, traj_es))
-            copyfile(output_file, traj_es)
-            output_destination_dir = os.path.join(dataset_pipeline_result_dir, "output")
-            log.debug("\033[1mMoving output dir:\033[0m \n %s \n \033[1m to destination:\033[0m \n %s" % 
-                (pipeline_output_dir, output_destination_dir))
-            try:
-                evt.move_output_from_to(pipeline_output_dir, output_destination_dir)
-            except:
-                log.fatal("\033[1mFailed copying output dir: \033[0m\n %s \n \033[1m to destination: %s \033[0m\n" % 
-                    (pipeline_output_dir, output_destination_dir))
+            Args:
+                traj_ref_path: string representing filepath of the reference (ground-truth) trajectory.
+                traj_vio_path: string representing filepath of the vio estimated trajectory.
+                traj_pgo_path: string representing filepath of the pgo estimated trajectory.
+                segments: list of segments for RPE calculation, defined in the experiments yaml file.
+                dataset_name: string representing the dataset's name
+                discard_n_start_poses: int representing number of poses to discard from start of analysis.
+                discard_n_end_poses: int representing the number of poses to discard from end of analysis.
+        """
+        import copy
+
+        # Mind that traj_est_pgo might be None
+        traj_ref, traj_est_vio, traj_est_pgo = self.read_traj_files(traj_ref_path, traj_vio_path, traj_pgo_path)
+
+        # We copy to distinguish from the pgo version that may be created
+        traj_ref_vio = copy.deepcopy(traj_ref)
+
+        # Register and align trajectories:
+        evt.print_purple("Registering and aligning trajectories")
+        traj_ref_vio, traj_est_vio = sync.associate_trajectories(traj_ref_vio, traj_est_vio)
+        traj_est_vio = trajectory.align_trajectory(traj_est_vio, traj_ref_vio, correct_scale = False,
+                                                   discard_n_start_poses = int(discard_n_start_poses),
+                                                   discard_n_end_poses = int(discard_n_end_poses))
+
+        # We do the same for the PGO trajectory if needed:
+        traj_ref_pgo = None
+        if traj_est_pgo is not None:
+            traj_ref_pgo = copy.deepcopy(traj_ref)
+            traj_ref_pgo, traj_est_pgo = sync.associate_trajectories(traj_ref_pgo, traj_est_pgo)
+            traj_est_pgo = trajectory.align_trajectory(traj_est_pgo, traj_ref_pgo, correct_scale = False,
+                                                       discard_n_start_poses = int(discard_n_start_poses),
+                                                       discard_n_end_poses = int(discard_n_end_poses))
+
+        # We need to pick the lowest num_poses before doing any computation:
+        num_of_poses = traj_est_vio.num_poses
+        if traj_est_pgo is not None:
+            num_of_poses = min(num_of_poses, traj_est_pgo.num_poses)
+            traj_est_pgo.reduce_to_ids(range(int(discard_n_start_poses), int(num_of_poses - discard_n_end_poses), 1))
+            traj_ref_pgo.reduce_to_ids(range(int(discard_n_start_poses), int(num_of_poses - discard_n_end_poses), 1))
+
+        traj_est_vio.reduce_to_ids(range(int(discard_n_start_poses), int(num_of_poses - discard_n_end_poses), 1))
+        traj_ref_vio.reduce_to_ids(range(int(discard_n_start_poses), int(num_of_poses - discard_n_end_poses), 1))
+
+        # Calculate all metrics:
+        (ape_metric_vio, rpe_metric_trans_vio, rpe_metric_rot_vio, results_vio) = self.process_trajectory_data(traj_ref_vio, traj_est_vio, segments, True)
+
+        # We do the same for the pgo trajectory if needed:
+        ape_metric_pgo = None
+        rpe_metric_trans_pgo = None
+        rpe_metric_rot_pgo = None
+        results_pgo = None
+        if traj_est_pgo is not None:
+            (ape_metric_pgo, rpe_metric_trans_pgo, rpe_metric_rot_pgo, results_pgo) = self.process_trajectory_data(traj_ref_pgo, traj_est_pgo, segments, False)
+
+        # Generate plots for return:
+        plot_collection = None
+        if self.display_plots or self.save_plots:
+            evt.print_green("Plotting:")
+            log.info(dataset_name)
+            plot_collection = plot.PlotCollection("Example")
+
+            if traj_est_pgo is not None:
+                # APE Metric Plot:
+                plot_collection.add_figure(
+                    "PGO_APE_translation",
+                    plot_metric(ape_metric_pgo, "PGO + VIO APE Translation")
+                )
+
+                # Trajectory Colormapped with ATE Plot:
+                plot_collection.add_figure(
+                    "PGO_APE_translation_trajectory_error",
+                    plot_traj_colormap_ape(ape_metric_pgo, traj_ref_pgo,
+                                               traj_est_vio, traj_est_pgo,
+                                               "PGO + VIO ATE Mapped Onto Trajectory")
+                )
+
+                # RPE Translation Metric Plot:
+                plot_collection.add_figure(
+                    "PGO_RPE_translation",
+                    plot_metric(rpe_metric_trans_pgo, "PGO + VIO RPE Translation")
+                )
+
+                # Trajectory Colormapped with RTE Plot:
+                plot_collection.add_figure(
+                    "PGO_RPE_translation_trajectory_error",
+                    plot_traj_colormap_rpe(rpe_metric_trans_pgo, traj_ref_pgo,
+                                               traj_est_vio, traj_est_pgo,
+                                               "PGO + VIO RPE Translation Error Mapped Onto Trajectory")
+                )
+
+                # RPE Rotation Metric Plot:
+                plot_collection.add_figure(
+                    "PGO_RPE_Rotation",
+                    plot_metric(rpe_metric_rot_pgo, "PGO + VIO RPE Rotation")
+                )
+
+                # Trajectory Colormapped with RTE Plot:
+                plot_collection.add_figure(
+                    "PGO_RPE_rotation_trajectory_error",
+                    plot_traj_colormap_rpe(rpe_metric_rot_pgo, traj_ref_pgo,
+                                               traj_est_vio, traj_est_pgo,
+                                               "PGO + VIO RPE Rotation Error Mapped Onto Trajectory")
+                )
+
+            # Plot VIO results
+            plot_collection.add_figure(
+                "VIO_APE_translation",
+                plot_metric(ape_metric_vio, "VIO APE Translation")
+            )
+
+            plot_collection.add_figure(
+                "VIO_APE_translation_trajectory_error",
+                plot_traj_colormap_ape(ape_metric_vio, traj_ref_vio,
+                                           traj_est_vio, None,
+                                           "VIO ATE Mapped Onto Trajectory")
+            )
+
+            plot_collection.add_figure(
+                "VIO_RPE_translation",
+                plot_metric(rpe_metric_trans_vio, "VIO RPE Translation")
+            )
+
+            plot_collection.add_figure(
+                "VIO_RPE_translation_trajectory_error",
+                plot_traj_colormap_rpe(rpe_metric_trans_vio, traj_ref_vio,
+                                           traj_est_vio, None,
+                                           "VIO RPE Translation Error Mapped Onto Trajectory")
+            )
+
+            plot_collection.add_figure(
+                "VIO_RPE_Rotation",
+                plot_metric(rpe_metric_rot_vio, "VIO RPE Rotation")
+            )
+
+            plot_collection.add_figure(
+                "VIO_RPE_rotation_trajectory_error",
+                plot_traj_colormap_rpe(rpe_metric_rot_vio, traj_ref_vio,
+                                           traj_est_vio, None,
+                                           "VIO RPE Rotation Error Mapped Onto Trajectory")
+            )
+
+        return [plot_collection, results_vio, results_pgo]
+
+    def process_trajectory_data(self, traj_ref, traj_est, segments, is_vio_traj=True):
+        """
+        """
+        suffix = "VIO" if is_vio_traj else "PGO"
+        data = (traj_ref, traj_est)
+
+        evt.print_purple("Calculating APE translation part for " + suffix)
+        ape_metric = get_ape_trans(data)
+
+        evt.print_purple("Calculating RPE translation part for " + suffix)
+        rpe_metric_trans = get_rpe_trans(data)
+
+        evt.print_purple("Calculating RPE rotation angle for " + suffix)
+        rpe_metric_rot = get_rpe_rot(data)
+
+        results = self.calc_results(ape_metric, rpe_metric_trans,
+                                    rpe_metric_rot, data, segments)
+
+        return (ape_metric, rpe_metric_trans, rpe_metric_rot, results)
+
+    def read_traj_files(self, traj_ref_path, traj_vio_path, traj_pgo_path):
+        """ Outputs PoseTrajectory3D objects for csv trajectory files.
+
+            Args:
+                traj_ref_path: string representing filepath of the reference (ground-truth) trajectory.
+                traj_vio_path: string representing filepath of the vio estimated trajectory.
+                traj_pgo_path: string representing filepath of the pgo estimated trajectory.
+
+            Returns: A 3-tuple with the PoseTrajectory3D objects representing the reference trajectory,
+                vio trajectory, and pgo trajectory in that order.
+                NOTE: traj_est_pgo is optional and might be None
+        """
+        # Read reference trajectory file:
+        traj_ref = None
+        try:
+            traj_ref = pandas_bridge.df_to_trajectory(pd.read_csv(traj_ref_path, sep=',', index_col=0))
+        except IOError as e:
+            raise Exception("\033[91mMissing ground-truth output csv! \033[93m {}.".format(e))
+
+        # Read estimated vio trajectory file:
+        traj_est_vio = None
+        try:
+            traj_est_vio = pandas_bridge.df_to_trajectory(pd.read_csv(traj_vio_path, sep=',', index_col=0))
+        except IOError as e:
+            raise Exception("\033[91mMissing vio estimated output csv! \033[93m {}.".format(e))
+
+        # Read estimated pgo trajectory file:
+        traj_est_pgo = None
+        try:
+            traj_est_pgo = pandas_bridge.df_to_trajectory(pd.read_csv(traj_pgo_path, sep=',', index_col=0))
+        except IOError as e:
+            log.warning("Missing pgo estimated output csv: {}.".format(e))
+            log.warning("Not plotting pgo results.")
+
+        return (traj_ref, traj_est_vio, traj_est_pgo)
+
+    def calc_results(self, ape_metric, rpe_metric_trans, rpe_metric_rot, data, segments):
+        """ Create and return a dictionary containing stats and results for ATE, RRE and RTE for a datset.
+
+            Args:
+                ape_metric: an evo.core.metric object representing the ATE.
+                rpe_metric_trans: an evo.core.metric object representing the RTE.
+                rpe_metric_rot: an evo.core.metric object representing the RRE.
+                data: a 2-tuple with reference and estimated trajectories as PoseTrajectory3D objects
+                    in that order.
+                segments: a list of segments for RPE.
+
+            Returns: a dictionary containing all relevant results.
+        """
+        # Calculate APE results:
+        results = dict()
+        ape_result = ape_metric.get_result()
+        results["absolute_errors"] = ape_result
+
+        # Calculate RPE results:
+        # TODO(Toni): Save RPE computation results rather than the statistics
+        # you can compute statistics later...
+        rpe_stats_trans = rpe_metric_trans.get_all_statistics()
+        rpe_stats_rot = rpe_metric_rot.get_all_statistics()
+
+        # Calculate RPE results of segments and save
+        results["relative_errors"] = dict()
+        for segment in segments:
+            results["relative_errors"][segment] = dict()
+            evt.print_purple("RPE analysis of segment: %d"%segment)
+            evt.print_lightpurple("Calculating RPE segment translation part")
+            rpe_segment_metric_trans = metrics.RPE(metrics.PoseRelation.translation_part,
+                                                   float(segment), metrics.Unit.meters, 0.01, True)
+            rpe_segment_metric_trans.process_data(data)
+            rpe_segment_stats_trans = rpe_segment_metric_trans.get_all_statistics()
+            results["relative_errors"][segment]["rpe_trans"] = rpe_segment_stats_trans
+
+            evt.print_lightpurple("Calculating RPE segment rotation angle")
+            rpe_segment_metric_rot = metrics.RPE(metrics.PoseRelation.rotation_angle_deg,
+                                                 float(segment), metrics.Unit.meters, 0.01, True)
+            rpe_segment_metric_rot.process_data(data)
+            rpe_segment_stats_rot = rpe_segment_metric_rot.get_all_statistics()
+            results["relative_errors"][segment]["rpe_rot"] = rpe_segment_stats_rot
+
+        return results
+
+    def save_results_to_file(self, results, title, dataset_pipeline_result_dir):
+        """ Writes a result dictionary to file as a yaml file.
+
+            Args:
+                results: a dictionary containing ape, rpe rotation and rpe translation results and
+                    statistics.
+                title: a string representing the filename without the '.yaml' extension.
+                dataset_pipeline_result_dir: a string representing the filepath for the location to
+                    save the results file.
+        """
+        results_file = os.path.join(dataset_pipeline_result_dir, title + '.yaml')
+        evt.print_green("Saving analysis results to: %s" % results_file)
+        evt.create_full_path_if_not_exists(results_file)
+        with open(results_file,'w') as outfile:
+            outfile.write(yaml.dump(results, default_flow_style=False))
+
+    def save_plots_to_file(self, plot_collection, dataset_pipeline_result_dir,
+                          save_pdf=True):
+        """ Wrie plot collection to disk as both eps and pdf.
+
+            Args:
+                - plot_collection: a PlotCollection containing all the plots to save to file.
+                - dataset_pipeline_result_dir: a string representing the filepath for the location to
+                    which the plot files are saved.
+                - save_pdf: whether to save figures to pdf or eps format
+        """
+        # Config output format (pdf, eps, ...) using evo_config...
+        if save_pdf:
+            pdf_output_file_path = os.path.join(dataset_pipeline_result_dir, "plots.pdf")
+            evt.print_green("Saving plots to: %s" % pdf_output_file_path)
+            plot_collection.export(pdf_output_file_path, False)
         else:
-            log.error("Pipeline failed on dataset: " + dataset_name)
-            # Avoid writting results.yaml with analysis if the pipeline failed.
-            log.info("Not writting results.yaml")
-            return False
+            eps_output_file_path = os.path.join(dataset_pipeline_result_dir, "plots.eps")
+            evt.print_green("Saving plots to: %s" % eps_output_file_path)
+            plot_collection.export(eps_output_file_path, False)
 
-    if analyse_vio:
-        log.debug("\033[1mAnalysing dataset:\033[0m \n %s \n \033[1m for pipeline \033[0m %s."
-                 % (dataset_results_dir, pipeline_type))
-        evt.print_green("Starting analysis of pipeline: %s" % pipeline_type)
-        run_analysis(traj_ref_path, traj_es, SEGMENTS,
-                     save_results, plot, save_plots, dataset_pipeline_result_dir, False,
-                     dataset_name,
-                     discard_n_start_poses,
-                     discard_n_end_poses)
-    return True
+    def save_boxplots_to_file(self, pipelines_to_run_list, dataset):
+        """ Writes boxplots for all pipelines of a given dataset to disk.
 
-# TODO(Toni): we are passing all params all the time.... Make a class!!
-def run_dataset(results_dir, params_dir, dataset_dir, dataset_properties, executable_path,
-                run_pipeline, analyse_vio,
-                plot, save_results, save_plots, save_boxplots, pipelines_to_run_list,
-                initial_k, final_k, discard_n_start_poses = 0, discard_n_end_poses = 0, extra_flagfile_path = '',
-                verbose_sparkvio = False):
-    """ Evaluates pipeline using Structureless(S), Structureless(S) + Projection(P), \
-            and Structureless(S) + Projection(P) + Regular(R) factors \
-            and then compiles a list of results """
-    dataset_name = dataset_properties['name']
-    dataset_segments = dataset_properties['segments']
+            Args:
+                pipelines_to_run_list: a list containing all pipelines to run for a dataset.
+                dataset: a single dataset, as taken from the experiments yaml file.
+        """
+        dataset_name = dataset['name']
+        dataset_segments = dataset['segments']
 
-    ################### RUN PIPELINE ################################
-    pipeline_output_dir = os.path.join(results_dir, "tmp_output/output/")
-    evt.create_full_path_if_not_exists(pipeline_output_dir)
-    output_file = os.path.join(pipeline_output_dir, "output_posesVIO.csv")
-    has_a_pipeline_failed = False
-    if len(pipelines_to_run_list) == 0:
-        log.warning("Not running pipeline...")
-    for pipeline_type in pipelines_to_run_list:
-        has_a_pipeline_failed = not process_vio(
-            executable_path, dataset_dir, dataset_name, results_dir, params_dir,
-            pipeline_output_dir, pipeline_type, dataset_segments, save_results,
-            plot, save_plots, output_file, run_pipeline, analyse_vio,
-            discard_n_start_poses, discard_n_end_poses,
-            initial_k, final_k, extra_flagfile_path, verbose_sparkvio)
-
-    # Save boxplots
-    if save_boxplots:
         # TODO(Toni) is this really saving the boxplots?
-        if not has_a_pipeline_failed:
-            stats = dict()
-            for pipeline_type in pipelines_to_run_list:
-                results_dataset_dir = os.path.join(results_dir, dataset_name)
-                results = os.path.join(results_dataset_dir, pipeline_type, "results.yaml")
-                if not os.path.exists(results):
-                    raise Exception("\033[91mCannot plot boxplots: missing results for %s pipeline \
-                                    and dataset: %s" % (pipeline_type, dataset_name) + "\033[99m \n \
-                                    Expected results here: %s" % results)
+        stats = dict()
+        for pipeline_type in pipelines_to_run_list:
+            results_dataset_dir = os.path.join(self.results_dir, dataset_name)
+            results_vio = os.path.join(results_dataset_dir, pipeline_type, "results_vio.yaml")
+            if not os.path.exists(results_vio):
+                raise Exception("\033[91mCannot plot boxplots: missing results for %s pipeline \
+                                and dataset: %s" % (pipeline_type, dataset_name) + "\033[99m \n \
+                                Expected results here: %s" % results_vio + "\033[99m \n \
+                                Ensure that `--save_results` is passed at commandline.")
 
-                try:
-                    stats[pipeline_type]  = yaml.load(open(results,'r'), Loader=yaml.Loader)
-                except yaml.YAMLError as e:
-                    raise Exception("Error in results file: ", e)
+            try:
+                stats[pipeline_type]  = yaml.load(open(results_vio,'r'), Loader=yaml.Loader)
+            except yaml.YAMLError as e:
+                raise Exception("Error in results_vio file: ", e)
 
-                log.info("Check stats %s in %s" % (pipeline_type, results))
-                check_stats(stats[pipeline_type])
+            log.info("Check stats %s in %s" % (pipeline_type, results_vio))
+            try:
+                evt.check_stats(stats[pipeline_type])
+            except Exception as e:
+                log.warning(e)
 
-            log.info("Drawing boxplots.")
+        if "relative_errors" in stats:
+            log.info("Drawing RPE boxplots.")
             evt.draw_rpe_boxplots(results_dataset_dir, stats, len(dataset_segments))
         else:
-            log.warning("A pipeline run has failed... skipping boxplot drawing.")
+            log.info("Missing RPE results, not drawing RPE boxplots.")
 
-    if not has_a_pipeline_failed:
-        evt.print_green("All pipeline runs were successful.")
-    else:
-        log.error("A pipeline has failed!")
-    evt.print_green("Finished evaluation for dataset: " + dataset_name)
-    return not has_a_pipeline_failed
+
+# Miscellaneous methods
+
+def get_ape_rot(data):
+    """ Return APE rotation metric for input data.
+
+        Args:
+            data: A 2-tuple containing the reference trajectory and the
+                estimated trajectory as PoseTrajectory3D objects.
+
+        Returns:
+            A metrics object containing the desired results.
+    """
+    ape_rot = metrics.APE(metrics.PoseRelation.rotation_angle_deg)
+    ape_rot.process_data(data)
+
+    return ape_rot
+
+
+def get_ape_trans(data):
+    """ Return APE translation metric for input data.
+
+        Args:
+            data: A 2-tuple containing the reference trajectory and the
+                estimated trajectory as PoseTrajectory3D objects.
+
+        Returns:
+            A metrics object containing the desired results.
+    """
+    ape_trans = metrics.APE(metrics.PoseRelation.translation_part)
+    ape_trans.process_data(data)
+
+    return ape_trans
+
+
+def get_rpe_rot(data):
+    """ Return RPE rotation metric for input data.
+
+        Args:
+            data: A 2-tuple containing the reference trajectory and the
+                estimated trajectory as PoseTrajectory3D objects.
+
+        Returns:
+            A metrics object containing the desired results.
+    """
+    rpe_rot = metrics.RPE(metrics.PoseRelation.rotation_angle_deg,
+                          1.0, metrics.Unit.frames, 1.0, False)
+    rpe_rot.process_data(data)
+
+    return rpe_rot
+
+def get_rpe_trans(data):
+    """ Return RPE translation metric for input data.
+
+        Args:
+            data: A 2-tuple containing the reference trajectory and the
+                estimated trajectory as PoseTrajectory3D objects.
+
+        Returns:
+            A metrics object containing the desired results.
+    """
+    rpe_trans = metrics.RPE(metrics.PoseRelation.translation_part,
+                            1.0, metrics.Unit.frames, 0.0, False)
+    rpe_trans.process_data(data)
+
+    return rpe_trans
+
+
+def plot_metric(metric, plot_title="", figsize=(8,8)):
+    """ Adds a metric plot to a plot collection.
+
+        Args:
+            plot_collection: a PlotCollection containing plots.
+            metric: an evo.core.metric object with statistics and information.
+            plot_title: a string representing the title of the plot.
+            figsize: a 2-tuple representing the figure size.
+
+        Returns:
+            A plt figure.
+    """
+    fig = plt.figure(figsize=figsize)
+    stats = metric.get_all_statistics()
+
+    plot.error_array(fig, metric.error, statistics=stats,
+                        title=plot_title,
+                        xlabel="Keyframe index [-]",
+                        ylabel=plot_title + " " + metric.unit.value)
+
+    return fig
+
+
+def plot_traj_colormap_ape(ape_metric, traj_ref, traj_est1, traj_est2=None,
+                           plot_title="", figsize=(8,8)):
+    """ Adds a trajectory colormap of ATE metrics to a plot collection.
+
+        Args:
+            ape_metric: an evo.core.metric object with statistics and information for APE.
+            traj_ref: a PoseTrajectory3D object representing the reference trajectory.
+            traj_est1: a PoseTrajectory3D object representing the vio-estimated trajectory.
+            traj_est2: a PoseTrajectory3D object representing the pgo-estimated trajectory. Optional.
+            plot_title: a string representing the title of the plot.
+            figsize: a 2-tuple representing the figure size.
+
+        Returns:
+            A plt figure.
+    """
+    fig = plt.figure(figsize=figsize)
+    plot_mode = plot.PlotMode.xy
+    ax = plot.prepare_axis(fig, plot_mode)
+
+    ape_stats = ape_metric.get_all_statistics()
+
+    plot.traj(ax, plot_mode, traj_ref, '--', 'gray', 'reference')
+
+    colormap_traj = traj_est1
+    if traj_est2 is not None:
+        plot.traj(ax, plot_mode, traj_est1, '.', 'gray', 'reference without pgo')
+        colormap_traj = traj_est2
+
+    plot.traj_colormap(ax, colormap_traj, ape_metric.error, plot_mode,
+                        min_map=0.0, max_map=math.ceil(ape_stats['max']*10)/10,
+                        title=plot_title)
+
+    return fig
+
+
+def plot_traj_colormap_rpe(rpe_metric, traj_ref, traj_est1, traj_est2=None,
+                           plot_title="", figsize=(8,8)):
+    """ Adds a trajectory colormap of RPE metrics to a plot collection.
+
+        Args:
+            ape_metric: an evo.core.metric object with statistics and information for RPE.
+            traj_ref: a PoseTrajectory3D object representing the reference trajectory.
+            traj_est1: a PoseTrajectory3D object representing the vio-estimated trajectory.
+            traj_est2: a PoseTrajectory3D object representing the pgo-estimated trajectory. Optional.
+            plot_title: a string representing the title of the plot.
+            figsize: a 2-tuple representing the figure size.
+
+        Returns:
+            A plt figure.
+    """
+    fig = plt.figure(figsize=figsize)
+    plot_mode = plot.PlotMode.xy
+    ax = plot.prepare_axis(fig, plot_mode)
+
+    # We have to make deep copies to avoid altering the original data: TODO(marcus): figure out why
+    traj_ref = copy.deepcopy(traj_ref)
+    traj_est1 = copy.deepcopy(traj_est1)
+    traj_est2 = copy.deepcopy(traj_est2)
+
+    rpe_stats = rpe_metric.get_all_statistics()
+    traj_ref.reduce_to_ids(rpe_metric.delta_ids)
+    traj_est1.reduce_to_ids(rpe_metric.delta_ids)
+
+    plot.traj(ax, plot_mode, traj_ref, '--', 'gray', 'reference')
+
+    colormap_traj = traj_est1
+    if traj_est2 is not None:
+        traj_est2.reduce_to_ids(rpe_metric.delta_ids)
+        plot.traj(ax, plot_mode, traj_est1, '.', 'gray', 'reference without pgo')
+        colormap_traj = traj_est2
+
+    plot.traj_colormap(ax, colormap_traj, rpe_metric.error, plot_mode,
+                        min_map=0.0, max_map=math.ceil(rpe_stats['max']*10)/10,
+                        title=plot_title)
+    
+    return fig
+
+
+def convert_abs_traj_to_rel_traj(traj, up_to_scale=False):
+    """ Converts an absolute-pose trajectory to a relative-pose trajectory.
+    
+        The incoming trajectory is processed element-wise. At each timestamp
+        starting from the second (index 1), the relative pose 
+        from the previous timestamp to the current one is calculated (in the previous-
+        timestamp's coordinate frame). This relative pose is then appended to the 
+        resulting trajectory.
+        The resulting trajectory has timestamp indices corresponding to poses that represent
+        the relative transformation between that timestamp and the **next** one.
+        
+        Args:
+            traj: A PoseTrajectory3D object with timestamps as indices containing, at a minimum,
+                columns representing the xyz position and wxyz quaternion-rotation at each
+                timestamp, corresponding to the absolute pose at that time.
+            up_to_scale: A boolean. If set to True, relative poses will have their translation
+                part normalized.
+        
+        Returns:
+            A PoseTrajectory3D object with xyz position and wxyz quaternion fields for the 
+            relative pose trajectory corresponding to the absolute one given in `traj`.
+    """
+    from evo.core import transformations
+    from evo.core import lie_algebra as lie
+
+    new_poses = []
+    
+    for i in range(1, len(traj.timestamps)):
+        rel_pose = lie.relative_se3(traj.poses_se3[i-1], traj.poses_se3[i])
+
+        if up_to_scale:
+            bim1_t_bi = rel_pose[:3, 3]
+            norm = np.linalg.norm(bim1_t_bi)
+            if norm > 1e-6:
+                bim1_t_bi = bim1_t_bi / norm
+                rel_pose[:3, 3] = bim1_t_bi
+    
+        new_poses.append(rel_pose)
+
+    return trajectory.PoseTrajectory3D(timestamps=traj.timestamps[1:], poses_se3=new_poses)
+
+def convert_rel_traj_from_body_to_cam(rel_traj, body_T_cam):
+    """Converts a relative pose trajectory from body frame to camera frame
+    
+    Args: 
+        rel_traj: Relative trajectory, a PoseTrajectory3D object containing timestamps
+            and relative poses at each timestamp. It has to have the poses_se3 field.
+            
+        body_T_cam: The SE(3) transformation from camera from to body frame. Also known
+            as camera extrinsics matrix.
+        
+    Returns: 
+        A PoseTrajectory3D object in camera frame
+    """
+    def assert_so3(R):
+        assert(np.isclose(np.linalg.det(R), 1, atol=1e-06))
+        assert(np.allclose(np.matmul(R, R.transpose()), np.eye(3), atol=1e-06)) 
+
+    assert_so3(body_T_cam[0:3, 0:3])
+ 
+    new_poses = []
+    for i in range(len(rel_traj.timestamps)):
+        im1_body_T_body_i = rel_traj.poses_se3[i]
+        assert_so3(im1_body_T_body_i[0:3,0:3])
+ 
+        im1_cam_T_cam_i = np.matmul(np.matmul(np.linalg.inv(body_T_cam), im1_body_T_body_i), body_T_cam)
+
+        assert_so3(np.linalg.inv(body_T_cam)[0:3,0:3])
+        assert_so3(im1_cam_T_cam_i[0:3,0:3])
+ 
+        new_poses.append(im1_cam_T_cam_i)
+ 
+    return trajectory.PoseTrajectory3D(timestamps=rel_traj.timestamps, poses_se3=new_poses)
+    
