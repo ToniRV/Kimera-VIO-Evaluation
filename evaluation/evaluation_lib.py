@@ -20,7 +20,7 @@ from evo.tools import file_interface
 import evaluation.tools as evt
 
 
-def aggregate_all_results(results_dir):
+def aggregate_all_results(results_dir, use_pgo=False):
     """ Aggregate APE results and draw APE boxplot as well as write latex table
     with results:
         Args:
@@ -34,6 +34,8 @@ def aggregate_all_results(results_dir):
                |___\* pipeline_type:
                |   |___results.yaml
                Basically all subfolders with a results.yaml will be examined.
+            - use_pgo: whether to aggregate all results for VIO or for PGO trajectory.
+                set to True for PGO and False (default) for VIO
         Returns:
             - stats: a nested dictionary with the statistics and results of all pipelines:
                 * First level ordered with dataset_name as keys:
@@ -46,9 +48,12 @@ def aggregate_all_results(results_dir):
     # Load results.
     log.info("Aggregate dataset results.")
     # Aggregate all stats for each pipeline and dataset
+    yaml_filename = 'results_vio.yaml'
+    if use_pgo:
+        yaml_filename = 'results_pgo.yaml'
     stats = dict()
     for root, dirnames, filenames in os.walk(results_dir):
-        for results_filename in fnmatch.filter(filenames, 'results_vio.yaml'):
+        for results_filename in fnmatch.filter(filenames, yaml_filename):
             results_filepath = os.path.join(root, results_filename)
             # Get pipeline name
             pipeline_name = os.path.basename(root)
@@ -61,7 +66,7 @@ def aggregate_all_results(results_dir):
             try:
                 stats[dataset_name][pipeline_name] = yaml.load(open(results_filepath, 'r'), Loader=yaml.Loader)
             except yaml.YAMLError as e:
-                raise Exception("Error in results_vio file: ", e)
+                raise Exception("Error in results file: ", e)
             except:
                 log.fatal("\033[1mFailed opening file: \033[0m\n %s" % results_filepath)
 
@@ -275,7 +280,7 @@ class DatasetRunner:
 
 """ DatasetEvaluator is used to evaluate performance of the pipeline on datasets """
 class DatasetEvaluator:
-    def __init__(self, experiment_params, args, extra_flagfile_path):
+    def __init__(self, experiment_params, args, extra_flagfile_path, traj_vio_csv_name="traj_vio.csv"):
         self.results_dir      = os.path.expandvars(experiment_params['results_dir'])
         self.datasets_to_eval = experiment_params['datasets_to_run']
 
@@ -289,8 +294,12 @@ class DatasetEvaluator:
 
         self.runner = DatasetRunner(experiment_params, args, extra_flagfile_path)
 
+        self.traj_vio_csv_name = traj_vio_csv_name
+        self.traj_gt_csv_name = "traj_gt.csv"
+        self.traj_pgo_csv_name = "traj_pgo.csv"
+
         # Class to write the results to the Jenkins website
-        self.website_builder = evt.WebsiteBuilder(self.results_dir)
+        self.website_builder = evt.WebsiteBuilder(self.results_dir, self.traj_vio_csv_name)
 
     def evaluate(self):
         """ Run datasets if necessary, evaluate all. """
@@ -313,12 +322,13 @@ class DatasetEvaluator:
             if (len(list(stats.values())) > 0):
                 self.website_builder.write_boxplot_website(stats)
             self.website_builder.write_datasets_website()
+            log.info("Done writing full website.")
 
         return True
 
     def evaluate_dataset(self, dataset):
         """ Evaluates VIO performance on given dataset """
-        log.info("Evaluate dataset: %s" % dataset['name'])
+        evt.print_red("Evaluate dataset: %s" % dataset['name'])
         pipelines_to_evaluate_list = dataset['pipelines']
         for pipeline_type in pipelines_to_evaluate_list:
             if not self.__evaluate_run(pipeline_type, dataset):
@@ -340,15 +350,15 @@ class DatasetEvaluator:
                 pipeline_type: a pipeline representing a set of parameters to use, as
                     defined in the experiments yaml file for the dataset in question.
 
-            Returns: True if the there are no exceptions during evaluation, False otherwise.
+            Returns: True if there are no exceptions during evaluation, False otherwise.
         """
         dataset_name = dataset["name"]
         dataset_results_dir = os.path.join(self.results_dir, dataset_name)
         dataset_pipeline_result_dir = os.path.join(dataset_results_dir, pipeline_type)
 
-        traj_gt_path = os.path.join(dataset_pipeline_result_dir, "traj_gt.csv")
-        traj_vio_path = os.path.join(dataset_pipeline_result_dir, "traj_vio.csv")
-        traj_pgo_path = os.path.join(dataset_pipeline_result_dir, "traj_pgo.csv")
+        traj_gt_path = os.path.join(dataset_pipeline_result_dir, self.traj_gt_csv_name)
+        traj_vio_path = os.path.join(dataset_pipeline_result_dir, self.traj_vio_csv_name)
+        traj_pgo_path = os.path.join(dataset_pipeline_result_dir, self.traj_pgo_csv_name)
 
         # Analyze dataset:
         log.debug("\033[1mAnalysing dataset:\033[0m \n %s \n \033[1m for pipeline \033[0m %s."
@@ -538,6 +548,8 @@ class DatasetEvaluator:
 
         evt.print_purple("Calculating APE translation part for " + suffix)
         ape_metric = get_ape_trans(data)
+        ape_result = ape_metric.get_result()
+        evt.print_green("APE translation: %f" % ape_result.stats['mean'])
 
         evt.print_purple("Calculating RPE translation part for " + suffix)
         rpe_metric_trans = get_rpe_trans(data)
@@ -545,8 +557,14 @@ class DatasetEvaluator:
         evt.print_purple("Calculating RPE rotation angle for " + suffix)
         rpe_metric_rot = get_rpe_rot(data)
 
-        results = self.calc_results(ape_metric, rpe_metric_trans,
-                                    rpe_metric_rot, data, segments)
+        # Collect results:
+        results = dict()
+        results["absolute_errors"] = ape_result
+
+        results["relative_errors"] = self.calc_rpe_results(rpe_metric_trans, rpe_metric_rot, data, segments)
+
+        # Add as well how long hte trajectory was.
+        results["trajectory_length_m"] = traj_est.path_length()
 
         return (ape_metric, rpe_metric_trans, rpe_metric_rot, results)
 
@@ -586,50 +604,40 @@ class DatasetEvaluator:
 
         return (traj_ref, traj_est_vio, traj_est_pgo)
 
-    def calc_results(self, ape_metric, rpe_metric_trans, rpe_metric_rot, data, segments):
-        """ Create and return a dictionary containing stats and results for ATE, RRE and RTE for a datset.
+    def calc_rpe_results(self, rpe_metric_trans, rpe_metric_rot, data, segments):
+        """ Create and return a dictionary containing stats and results RRE and RTE for a datset.
 
             Args:
-                ape_metric: an evo.core.metric object representing the ATE.
                 rpe_metric_trans: an evo.core.metric object representing the RTE.
                 rpe_metric_rot: an evo.core.metric object representing the RRE.
                 data: a 2-tuple with reference and estimated trajectories as PoseTrajectory3D objects
                     in that order.
                 segments: a list of segments for RPE.
 
-            Returns: a dictionary containing all relevant results.
+            Returns: a dictionary containing all relevant RPE results.
         """
-        # Calculate APE results:
-        results = dict()
-        ape_result = ape_metric.get_result()
-        results["absolute_errors"] = ape_result
-
-        # Calculate RPE results:
-        # TODO(Toni): Save RPE computation results rather than the statistics
-        # you can compute statistics later...
-        rpe_stats_trans = rpe_metric_trans.get_all_statistics()
-        rpe_stats_rot = rpe_metric_rot.get_all_statistics()
-
         # Calculate RPE results of segments and save
-        results["relative_errors"] = dict()
+        rpe_results = dict()
         for segment in segments:
-            results["relative_errors"][segment] = dict()
+            rpe_results[segment] = dict()
             evt.print_purple("RPE analysis of segment: %d"%segment)
             evt.print_lightpurple("Calculating RPE segment translation part")
             rpe_segment_metric_trans = metrics.RPE(metrics.PoseRelation.translation_part,
                                                    float(segment), metrics.Unit.meters, 0.01, True)
             rpe_segment_metric_trans.process_data(data)
+            # TODO(Toni): Save RPE computation results rather than the statistics
+            # you can compute statistics later... Like done for ape!
             rpe_segment_stats_trans = rpe_segment_metric_trans.get_all_statistics()
-            results["relative_errors"][segment]["rpe_trans"] = rpe_segment_stats_trans
+            rpe_results[segment]["rpe_trans"] = rpe_segment_stats_trans
 
             evt.print_lightpurple("Calculating RPE segment rotation angle")
             rpe_segment_metric_rot = metrics.RPE(metrics.PoseRelation.rotation_angle_deg,
                                                  float(segment), metrics.Unit.meters, 0.01, True)
             rpe_segment_metric_rot.process_data(data)
             rpe_segment_stats_rot = rpe_segment_metric_rot.get_all_statistics()
-            results["relative_errors"][segment]["rpe_rot"] = rpe_segment_stats_rot
+            rpe_results[segment]["rpe_rot"] = rpe_segment_stats_rot
 
-        return results
+        return rpe_results
 
     def save_results_to_file(self, results, title, dataset_pipeline_result_dir):
         """ Writes a result dictionary to file as a yaml file.
@@ -870,37 +878,37 @@ def plot_traj_colormap_rpe(rpe_metric, traj_ref, traj_est1, traj_est2=None,
     plot.traj_colormap(ax, colormap_traj, rpe_metric.error, plot_mode,
                         min_map=0.0, max_map=math.ceil(rpe_stats['max']*10)/10,
                         title=plot_title)
-    
+
     return fig
 
 
 def convert_abs_traj_to_rel_traj(traj, up_to_scale=False):
     """ Converts an absolute-pose trajectory to a relative-pose trajectory.
-    
+
         The incoming trajectory is processed element-wise. At each timestamp
-        starting from the second (index 1), the relative pose 
+        starting from the second (index 1), the relative pose
         from the previous timestamp to the current one is calculated (in the previous-
-        timestamp's coordinate frame). This relative pose is then appended to the 
+        timestamp's coordinate frame). This relative pose is then appended to the
         resulting trajectory.
         The resulting trajectory has timestamp indices corresponding to poses that represent
         the relative transformation between that timestamp and the **next** one.
-        
+
         Args:
             traj: A PoseTrajectory3D object with timestamps as indices containing, at a minimum,
                 columns representing the xyz position and wxyz quaternion-rotation at each
                 timestamp, corresponding to the absolute pose at that time.
             up_to_scale: A boolean. If set to True, relative poses will have their translation
                 part normalized.
-        
+
         Returns:
-            A PoseTrajectory3D object with xyz position and wxyz quaternion fields for the 
+            A PoseTrajectory3D object with xyz position and wxyz quaternion fields for the
             relative pose trajectory corresponding to the absolute one given in `traj`.
     """
     from evo.core import transformations
     from evo.core import lie_algebra as lie
 
     new_poses = []
-    
+
     for i in range(1, len(traj.timestamps)):
         rel_pose = lie.relative_se3(traj.poses_se3[i-1], traj.poses_se3[i])
 
@@ -910,7 +918,41 @@ def convert_abs_traj_to_rel_traj(traj, up_to_scale=False):
             if norm > 1e-6:
                 bim1_t_bi = bim1_t_bi / norm
                 rel_pose[:3, 3] = bim1_t_bi
-    
+
         new_poses.append(rel_pose)
 
     return trajectory.PoseTrajectory3D(timestamps=traj.timestamps[1:], poses_se3=new_poses)
+
+def convert_rel_traj_from_body_to_cam(rel_traj, body_T_cam):
+    """Converts a relative pose trajectory from body frame to camera frame
+
+    Args:
+        rel_traj: Relative trajectory, a PoseTrajectory3D object containing timestamps
+            and relative poses at each timestamp. It has to have the poses_se3 field.
+
+        body_T_cam: The SE(3) transformation from camera from to body frame. Also known
+            as camera extrinsics matrix.
+
+    Returns:
+        A PoseTrajectory3D object in camera frame
+    """
+    def assert_so3(R):
+        assert(np.isclose(np.linalg.det(R), 1, atol=1e-06))
+        assert(np.allclose(np.matmul(R, R.transpose()), np.eye(3), atol=1e-06))
+
+    assert_so3(body_T_cam[0:3, 0:3])
+
+    new_poses = []
+    for i in range(len(rel_traj.timestamps)):
+        im1_body_T_body_i = rel_traj.poses_se3[i]
+        assert_so3(im1_body_T_body_i[0:3,0:3])
+
+        im1_cam_T_cam_i = np.matmul(np.matmul(np.linalg.inv(body_T_cam), im1_body_T_body_i), body_T_cam)
+
+        assert_so3(np.linalg.inv(body_T_cam)[0:3,0:3])
+        assert_so3(im1_cam_T_cam_i[0:3,0:3])
+
+        new_poses.append(im1_cam_T_cam_i)
+
+    return trajectory.PoseTrajectory3D(timestamps=rel_traj.timestamps, poses_se3=new_poses)
+
