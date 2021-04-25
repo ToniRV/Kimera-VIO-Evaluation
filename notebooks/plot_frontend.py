@@ -427,43 +427,70 @@ temporal_cal_file = os.path.join(
 
 temporal_cal_df = pd.read_csv(temporal_cal_file, sep=",", index_col=False)
 t_imu_cam_s = temporal_cal_df.loc[temporal_cal_df.index[-1], "t_imu_cam_s"]
+window_size = sum(temporal_cal_df["not_enough_data"])
 print("t_imu_cam_s = {}".format(t_imu_cam_s))
 temporal_cal_df.head()
 
 # %%
 # Plot data before alignment
-fig, ax = plt.subplots()
-ax.plot(
+fig, ax = plt.subplots(1, 2, sharey=True)
+ax[0].plot(
     temporal_cal_df["#timestamp_vision"] * 1.0e-9,
     temporal_cal_df["vision_relative_angle_norm"],
     label="Camera",
 )
-ax.plot(
+ax[0].plot(
     temporal_cal_df["timestamp_imu"] * 1.0e-9,
     temporal_cal_df["image_relative_angle_norm"],
     label="IMU",
 )
-ax.legend()
-ax.set_xlabel("Time [s]")
-ax.set_ylabel("Rotation Angle [rad]")
-ax.set_title("Rotation angles before time-alignment")
+ax[1].plot(
+    temporal_cal_df["#timestamp_vision"].iloc[-window_size:] * 1.0e-9,
+    temporal_cal_df["vision_relative_angle_norm"].iloc[-window_size:],
+    label="Camera",
+)
+ax[1].plot(
+    temporal_cal_df["timestamp_imu"].iloc[-window_size:] * 1.0e-9,
+    temporal_cal_df["image_relative_angle_norm"].iloc[-window_size:],
+    label="IMU",
+)
+ax[0].legend()
+ax[0].set_xlabel("Time [s]")
+ax[0].set_ylabel("Rotation Angle [rad]")
+ax[0].set_title("Rotation angles before time-alignment")
+ax[1].set_xlabel("Time [s]")
+ax[1].set_title("Rotation angles before time-alignment (alignment window)")
+fig.set_size_inches((16, 6))
 plt.show()
 
 # %%
 # Plot data after alignment
-fig, ax = plt.subplots()
-ax.plot(
+fig, ax = plt.subplots(1, 2, sharey=True)
+ax[0].plot(
     temporal_cal_df["#timestamp_vision"] * 1.0e-9,
     temporal_cal_df["vision_relative_angle_norm"],
     label="Camera",
 )
-ax.plot(
+ax[0].plot(
     temporal_cal_df["timestamp_imu"] * 1.0e-9 + t_imu_cam_s,
     temporal_cal_df["image_relative_angle_norm"],
     label="IMU",
 )
-ax.legend()
-ax.set_xlabel("Time [s]")
-ax.set_ylabel("Rotation Angle [rad]")
-ax.set_title("Rotation angles after time-alignment")
+ax[1].plot(
+    temporal_cal_df["#timestamp_vision"].iloc[-window_size:] * 1.0e-9,
+    temporal_cal_df["vision_relative_angle_norm"].iloc[-window_size:],
+    label="Camera",
+)
+ax[1].plot(
+    temporal_cal_df["timestamp_imu"].iloc[-window_size:] * 1.0e-9 + t_imu_cam_s,
+    temporal_cal_df["image_relative_angle_norm"].iloc[-window_size:],
+    label="IMU",
+)
+ax[0].legend()
+ax[0].set_xlabel("Time [s]")
+ax[0].set_ylabel("Rotation Angle [rad]")
+ax[0].set_title("Rotation angles after time-alignment")
+ax[1].set_xlabel("Time [s]")
+ax[1].set_title("Rotation angles after time-alignment (alignment window)")
+fig.set_size_inches((16, 6))
 plt.show()
