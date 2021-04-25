@@ -413,3 +413,57 @@ seconds_from_start = [t - traj_est_rel.timestamps[0] for t in traj_est_rel.times
 plot_metric(rpe_rot, "Stereo Ransac RPE Rotation Part (degrees)", figsize=(18, 10))
 plot_metric(rpe_tran, "Stereo Ransac RPE Translation Part (meters)", figsize=(18, 10))
 plt.show()
+
+# %% [markdown]
+# ## Time-Alignment
+#
+# Show 1d relative rotation angles before and after time alignment
+
+# %%
+# grab time alignment data from debug file
+temporal_cal_file = os.path.join(
+    os.path.expandvars(vio_output_dir), "output_frontend_temporal_cal.csv"
+)
+
+temporal_cal_df = pd.read_csv(temporal_cal_file, sep=",", index_col=False)
+t_imu_cam_s = temporal_cal_df.loc[temporal_cal_df.index[-1], "t_imu_cam_s"]
+print("t_imu_cam_s = {}".format(t_imu_cam_s))
+temporal_cal_df.head()
+
+# %%
+# Plot data before alignment
+fig, ax = plt.subplots()
+ax.plot(
+    temporal_cal_df["#timestamp_vision"] * 1.0e-9,
+    temporal_cal_df["vision_relative_angle_norm"],
+    label="Camera",
+)
+ax.plot(
+    temporal_cal_df["timestamp_imu"] * 1.0e-9,
+    temporal_cal_df["image_relative_angle_norm"],
+    label="IMU",
+)
+ax.legend()
+ax.set_xlabel("Time [s]")
+ax.set_ylabel("Rotation Angle [rad]")
+ax.set_title("Rotation angles before time-alignment")
+plt.show()
+
+# %%
+# Plot data after alignment
+fig, ax = plt.subplots()
+ax.plot(
+    temporal_cal_df["#timestamp_vision"] * 1.0e-9,
+    temporal_cal_df["vision_relative_angle_norm"],
+    label="Camera",
+)
+ax.plot(
+    temporal_cal_df["timestamp_imu"] * 1.0e-9 + t_imu_cam_s,
+    temporal_cal_df["image_relative_angle_norm"],
+    label="IMU",
+)
+ax.legend()
+ax.set_xlabel("Time [s]")
+ax.set_ylabel("Rotation Angle [rad]")
+ax.set_title("Rotation angles after time-alignment")
+plt.show()
