@@ -58,8 +58,8 @@ from evaluation.evaluation_lib import (
     convert_rel_traj_from_body_to_cam,
 )
 
-# %matplotlib inline
-# # %matplotlib notebookw_T_bi
+# # %matplotlib inline
+# %matplotlib notebook
 import matplotlib.pyplot as plt
 
 # %% [markdown]
@@ -73,9 +73,12 @@ import matplotlib.pyplot as plt
 
 # %%
 # Define directory to VIO output csv files as well as ground truth absolute poses.
-vio_output_dir = ""
-gt_data_file = ""
-left_cam_calibration_file = ""
+dataset = "Euroc"
+vio_output_dir = "/data/datasets/containers/kimera-vio/kimera-output/{}".format(dataset)
+gt_data_file = "{}/traj_vio.csv".format(vio_output_dir)
+left_cam_calibration_file = "/data/datasets/containers/kimera-vio/params/{}/LeftCameraParams.yaml".format(
+    dataset
+)
 
 # %% [markdown]
 # ## Frontend Statistics
@@ -282,7 +285,7 @@ for i in range(len(traj_ref_rel._poses_se3)):
     gt_angles_timestamps.append(traj_ref_rel.timestamps[i])
     # rotation matrix to axisangle
     rotm = traj_ref_rel._poses_se3[i][0:3, 0:3]
-    r = R.from_dcm(rotm)
+    r = R.from_matrix(rotm)
 
     rot_vec = r.as_rotvec()
     gt_angles.append(np.linalg.norm(rot_vec))
@@ -429,68 +432,110 @@ temporal_cal_df = pd.read_csv(temporal_cal_file, sep=",", index_col=False)
 t_imu_cam_s = temporal_cal_df.loc[temporal_cal_df.index[-1], "t_imu_cam_s"]
 window_size = sum(temporal_cal_df["not_enough_data"])
 print("t_imu_cam_s = {}".format(t_imu_cam_s))
-temporal_cal_df.head()
+
+temporal_marker = "+"
 
 # %%
-# Plot data before alignment
-fig, ax = plt.subplots(1, 2, sharey=True)
+# Plot all data
+fig, ax = plt.subplots(2, 1, sharex=True)
 ax[0].plot(
     temporal_cal_df["#timestamp_vision"] * 1.0e-9,
-    temporal_cal_df["vision_relative_angle_norm"],
+    np.degrees(temporal_cal_df["vision_relative_angle_norm"]),
     label="Camera",
+    marker=temporal_marker,
 )
 ax[0].plot(
     temporal_cal_df["timestamp_imu"] * 1.0e-9,
-    temporal_cal_df["image_relative_angle_norm"],
+    np.degrees(temporal_cal_df["imu_relative_angle_norm"]),
     label="IMU",
+    marker=temporal_marker,
 )
 ax[1].plot(
-    temporal_cal_df["#timestamp_vision"].iloc[-window_size:] * 1.0e-9,
-    temporal_cal_df["vision_relative_angle_norm"].iloc[-window_size:],
+    temporal_cal_df["#timestamp_vision"] * 1.0e-9,
+    np.degrees(temporal_cal_df["vision_relative_angle_norm"]),
     label="Camera",
+    marker=temporal_marker,
 )
 ax[1].plot(
-    temporal_cal_df["timestamp_imu"].iloc[-window_size:] * 1.0e-9,
-    temporal_cal_df["image_relative_angle_norm"].iloc[-window_size:],
+    temporal_cal_df["timestamp_imu"] * 1.0e-9 + t_imu_cam_s,
+    np.degrees(temporal_cal_df["imu_relative_angle_norm"]),
     label="IMU",
+    marker=temporal_marker,
 )
 ax[0].legend()
 ax[0].set_xlabel("Time [s]")
-ax[0].set_ylabel("Rotation Angle [rad]")
+ax[0].set_ylabel("Rotation Angle [degrees]")
 ax[0].set_title("Rotation angles before time-alignment")
-ax[1].set_xlabel("Time [s]")
-ax[1].set_title("Rotation angles before time-alignment (alignment window)")
-fig.set_size_inches((16, 6))
+ax[1].set_ylabel("Rotation Angle [degrees]")
+ax[1].set_title("Rotation angles after time-alignment")
+fig.set_size_inches((9, 9))
+plt.tight_layout()
 plt.show()
 
 # %%
-# Plot data after alignment
-fig, ax = plt.subplots(1, 2, sharey=True)
+# Plot data just in alignment window
+fig, ax = plt.subplots(2, 1, sharex=True)
 ax[0].plot(
-    temporal_cal_df["#timestamp_vision"] * 1.0e-9,
-    temporal_cal_df["vision_relative_angle_norm"],
+    temporal_cal_df["#timestamp_vision"].iloc[-window_size:] * 1.0e-9,
+    temporal_cal_df["vision_relative_angle_norm"].iloc[-window_size:],
     label="Camera",
+    marker=temporal_marker,
 )
 ax[0].plot(
-    temporal_cal_df["timestamp_imu"] * 1.0e-9 + t_imu_cam_s,
-    temporal_cal_df["image_relative_angle_norm"],
+    temporal_cal_df["timestamp_imu"].iloc[-window_size:] * 1.0e-9,
+    temporal_cal_df["imu_relative_angle_norm"].iloc[-window_size:],
     label="IMU",
+    marker=temporal_marker,
 )
 ax[1].plot(
     temporal_cal_df["#timestamp_vision"].iloc[-window_size:] * 1.0e-9,
     temporal_cal_df["vision_relative_angle_norm"].iloc[-window_size:],
     label="Camera",
+    marker=temporal_marker,
 )
 ax[1].plot(
     temporal_cal_df["timestamp_imu"].iloc[-window_size:] * 1.0e-9 + t_imu_cam_s,
-    temporal_cal_df["image_relative_angle_norm"].iloc[-window_size:],
+    temporal_cal_df["imu_relative_angle_norm"].iloc[-window_size:],
     label="IMU",
+    marker=temporal_marker,
 )
 ax[0].legend()
 ax[0].set_xlabel("Time [s]")
-ax[0].set_ylabel("Rotation Angle [rad]")
-ax[0].set_title("Rotation angles after time-alignment")
-ax[1].set_xlabel("Time [s]")
-ax[1].set_title("Rotation angles after time-alignment (alignment window)")
-fig.set_size_inches((16, 6))
+ax[0].set_ylabel("Rotation Angle [degrees]")
+ax[0].set_title("Rotation angles before time-alignment")
+ax[1].set_ylabel("Rotation Angle [degrees]")
+ax[1].set_title("Rotation angles after time-alignment")
+fig.set_size_inches((9, 9))
+plt.show()
+
+# %%
+vision_times = temporal_cal_df["#timestamp_vision"]
+imu_times = temporal_cal_df["timestamp_imu"]
+N = len(vision_times)
+delays = np.zeros(2 * N - 1)
+for i in range(N):
+    delays[i] = (vision_times[0] - imu_times[N - 1 - i]) * 1.0e-9
+    delays[2 * N - 2 - i] = (imu_times[N - 1 - i] - vision_times[0]) * 1.0e-9
+
+cross_corr = np.correlate(
+    temporal_cal_df["vision_relative_angle_norm"],
+    temporal_cal_df["imu_relative_angle_norm"],
+    mode="full",
+)
+fig, ax = plt.subplots()
+ax.plot(delays, cross_corr, marker=temporal_marker, label="correlation")
+extents = ax.get_ylim()
+ax.vlines(
+    t_imu_cam_s,
+    ymin=extents[0],
+    ymax=extents[1],
+    label="Estimated delay [s]",
+    colors="k",
+    linestyles="--",
+)
+ax.set_ylim(extents)
+ax.set_xlabel("t_shift_imu_cam [s]")
+ax.set_ylabel("correlation")
+ax.legend()
+fig.set_size_inches((8, 8))
 plt.show()
