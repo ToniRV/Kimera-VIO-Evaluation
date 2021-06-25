@@ -1,6 +1,6 @@
-# Kimera VIO Evaluation
+# WE NOW USE [MIT-SPARK/Kimera-VIO-Evaluation](https://github.com/MIT-SPARK/Kimera-VIO-Evaluation), not this one.
 
-Note that this repo is a mirror of [https://github.com/ToniRV/Kimera-VIO-Evaluation](https://github.com/ToniRV/Kimera-VIO-Evaluation)
+# Kimera VIO Evaluation
 
 ![](https://travis-ci.org/ToniRV/Kimera-VIO-Evaluation.svg?branch=master)
 
